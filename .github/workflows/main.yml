@@ -1,4 +1,4 @@
-name: Android OS Remote Access
+name: Android OS Remote Access (Fast Boot)
 
 on:
   workflow_dispatch:
@@ -30,33 +30,45 @@ jobs:
         run: |
           ngrok config add-authtoken $NGROK_AUTHTOKEN
 
-      - name: Launch Android OS (Docker Container)
+      - name: Launch Android OS (Fast Boot Mode)
         run: |
           docker run -d \
             --privileged \
             --name android-container \
+            -p 5900:5900 \
             -p 6080:6080 \
-            -e EMULATOR_DEVICE="Samsung Galaxy S10" \
+            -e EMULATOR_DEVICE="Nexus 5" \
             -e WEB_VNC=true \
+            -e VNC_USER="AdminMudasir" \
+            -e VNC_PASSWORD="MuDaSiT#786$99" \
+            -e APPIUM=false \
+            -e DEVICE_CONNECT=true \
             --device /dev/kvm \
-            budtmo/docker-android:latest
+            budtmo/docker-android-x86-11.0
 
-      - name: Wait for Android OS to Boot Up
+      - name: Ultra-Fast Setup & UI Optimization
         run: |
-          echo "Waiting for Android Emulator to start..."
-          sleep 90
+          echo "Quick boot setup running..."
+          sleep 35
+          # Speed up UI & enable 3-Button Nav
+          docker exec android-container adb shell settings put global window_animation_scale 0.0 || true
+          docker exec android-container adb shell settings put global transition_animation_scale 0.0 || true
+          docker exec android-container adb shell settings put global animator_duration_scale 0.0 || true
+          docker exec android-container adb shell settings put global policy_control null || true
+          docker exec android-container adb shell qemu.hw.mainkeys 0 || true
 
-      - name: Start Ngrok Tunnel
+      - name: Start Ngrok TCP Tunnel
         run: |
-          echo "Creating Ngrok Tunnel..."
-          ngrok http 6080 --log=stdout > ngrok.log &
-          sleep 5
-          echo "=========================================="
-          echo "YOUR NGROK URL:"
-          curl -s http://localhost:4040/api/tunnels | grep -o 'https://[^"]*' | head -n 1
-          echo "=========================================="
+          echo "Ngrok TCP Tunneling..."
+          ngrok tcp 5900 --log=stdout > ngrok.log &
+          sleep 3
+          echo "=========================================================="
+          echo "YOUR FAST-CONNECT VNC ENDPOINT:"
+          curl -s http://localhost:4040/api/tunnels | grep -o 'tcp://[^"]*'
+          echo "Username: AdminMudasir"
+          echo "Password: MuDaSiT#786$99"
+          echo "=========================================================="
 
       - name: Keep Workflow Alive
         run: |
-          echo "Android OS running! Access using the Ngrok link above."
-          sleep 21600
+          sleep 216000
