@@ -1,7 +1,7 @@
 name: Android OS Remote Access
 
 on:
-  workflow_dispatch: # Actions tab se manually run karne ke liye
+  workflow_dispatch:
 
 jobs:
   run-android:
@@ -32,24 +32,31 @@ jobs:
 
       - name: Launch Android OS (Docker Container)
         run: |
-          docker run -d -p 6080:6080 -e EMULATOR_DEVICE="Samsung Galaxy S10" -e WEB_VNC=true --device /dev/kvm --name android-container budtmo/docker-android-x86-13.0
+          docker run -d \
+            --privileged \
+            --name android-container \
+            -p 6080:6080 \
+            -e EMULATOR_DEVICE="Samsung Galaxy S10" \
+            -e WEB_VNC=true \
+            --device /dev/kvm \
+            budtmo/docker-android:latest
 
       - name: Wait for Android OS to Boot Up
         run: |
-          echo "Waiting for Android Emulator to fully load..."
-          sleep 60
+          echo "Waiting for Android Emulator to start..."
+          sleep 90
 
       - name: Start Ngrok Tunnel
         run: |
-          echo "Creating Ngrok Tunnel on Port 6080 (noVNC)..."
+          echo "Creating Ngrok Tunnel..."
           ngrok http 6080 --log=stdout > ngrok.log &
           sleep 5
+          echo "=========================================="
+          echo "YOUR NGROK URL:"
           curl -s http://localhost:4040/api/tunnels | grep -o 'https://[^"]*' | head -n 1
+          echo "=========================================="
 
       - name: Keep Workflow Alive
         run: |
-          echo "=========================================================="
-          echo "Android OS active hai! Ngrok Dashboard ya log me URL dekho."
-          echo "Workflow ko stop karne ke liye Cancel Run par click karein."
-          echo "=========================================================="
-          sleep 21600 # 6 ghante tak active rahega (GitHub max limit)
+          echo "Android OS running! Access using the Ngrok link above."
+          sleep 21600
