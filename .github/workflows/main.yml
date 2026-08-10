@@ -1,0 +1,55 @@
+name: Android OS Remote Access
+
+on:
+  workflow_dispatch: # Actions tab se manually run karne ke liye
+
+jobs:
+  run-android:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Enable KVM Hardware Acceleration
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-kvm libvirt-daemon-system libvirt-clients bridge-utils
+          sudo adduser $USER kvm
+          sudo chown $USER /dev/kvm
+
+      - name: Install Ngrok
+        run: |
+          curl -s https://ngrok-agent.s3.amazonaws.com/ngrok.asc | sudo tee /etc/apt/trusted.gpg.d/ngrok.asc >/dev/null
+          echo "deb https://ngrok-agent.s3.amazonaws.com buster main" | sudo tee /etc/apt/sources.list.d/ngrok.list
+          sudo apt update && sudo apt install ngrok
+
+      - name: Authenticate Ngrok
+        env:
+          NGROK_AUTHTOKEN: ${{ secrets.NGROK_AUTHTOKEN }}
+        run: |
+          ngrok config add-authtoken $NGROK_AUTHTOKEN
+
+      - name: Launch Android OS (Docker Container)
+        run: |
+          docker run -d -p 6080:6080 -e EMULATOR_DEVICE="Samsung Galaxy S10" -e WEB_VNC=true --device /dev/kvm --name android-container budtmo/docker-android-x86-13.0
+
+      - name: Wait for Android OS to Boot Up
+        run: |
+          echo "Waiting for Android Emulator to fully load..."
+          sleep 60
+
+      - name: Start Ngrok Tunnel
+        run: |
+          echo "Creating Ngrok Tunnel on Port 6080 (noVNC)..."
+          ngrok http 6080 --log=stdout > ngrok.log &
+          sleep 5
+          curl -s http://localhost:4040/api/tunnels | grep -o 'https://[^"]*' | head -n 1
+
+      - name: Keep Workflow Alive
+        run: |
+          echo "=========================================================="
+          echo "Android OS active hai! Ngrok Dashboard ya log me URL dekho."
+          echo "Workflow ko stop karne ke liye Cancel Run par click karein."
+          echo "=========================================================="
+          sleep 21600 # 6 ghante tak active rahega (GitHub max limit)
