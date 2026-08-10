@@ -1,4 +1,4 @@
-name: Android OS Remote Access (Fast Boot)
+name: Android OS Remote Access (6 Hours & Fixed)
 
 on:
   workflow_dispatch:
@@ -30,7 +30,7 @@ jobs:
         run: |
           ngrok config add-authtoken $NGROK_AUTHTOKEN
 
-      - name: Launch Android OS (Fast Boot Mode)
+      - name: Launch Android OS (Stable Public Image)
         run: |
           docker run -d \
             --privileged \
@@ -44,13 +44,13 @@ jobs:
             -e APPIUM=false \
             -e DEVICE_CONNECT=true \
             --device /dev/kvm \
-            budtmo/docker-android-x86-11.0
+            budtmo/docker-android:latest
 
       - name: Ultra-Fast Setup & UI Optimization
         run: |
-          echo "Quick boot setup running..."
-          sleep 35
-          # Speed up UI & enable 3-Button Nav
+          echo "Waiting for container to boot..."
+          sleep 40
+          echo "Optimizing UI & enabling 3-Button Navigation..."
           docker exec android-container adb shell settings put global window_animation_scale 0.0 || true
           docker exec android-container adb shell settings put global transition_animation_scale 0.0 || true
           docker exec android-container adb shell settings put global animator_duration_scale 0.0 || true
@@ -59,16 +59,17 @@ jobs:
 
       - name: Start Ngrok TCP Tunnel
         run: |
-          echo "Ngrok TCP Tunneling..."
+          echo "Starting Ngrok TCP Tunnel..."
           ngrok tcp 5900 --log=stdout > ngrok.log &
-          sleep 3
+          sleep 5
           echo "=========================================================="
-          echo "YOUR FAST-CONNECT VNC ENDPOINT:"
+          echo "YOUR VNC ENDPOINT DETAILS FOR WINDOWS APP:"
           curl -s http://localhost:4040/api/tunnels | grep -o 'tcp://[^"]*'
           echo "Username: AdminMudasir"
           echo "Password: MuDaSiT#786$99"
           echo "=========================================================="
 
-      - name: Keep Workflow Alive
+      - name: Keep Workflow Alive (6 Hours)
         run: |
-          sleep 216000
+          echo "Android OS is now active for 6 hours!"
+          sleep 21600
