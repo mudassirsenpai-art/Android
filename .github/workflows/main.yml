@@ -68,13 +68,16 @@ jobs:
 
           adb -s 127.0.0.1:5555 shell settings put global policy_control null
 
-          echo "===== Checking if a VNC server is actually listening on 5900 ====="
-          adb -s 127.0.0.1:5555 shell getprop ro.rfb.port || true
-          docker exec redroid sh -c "netstat -tlnp 2>/dev/null | grep 5900 || ss -tlnp 2>/dev/null | grep 5900 || echo 'NOTHING LISTENING ON 5900'"
+          echo "===== Manually starting the vncserver binary (it exists but doesn't auto-start) ====="
+          # The image ships /vendor/bin/vncserver but its init.rc trigger doesn't fire automatically,
+          # so we launch it directly as a background process inside the container.
+          docker exec -d redroid /vendor/bin/vncserver -rfbport 5900
 
-          echo "===== Checking for a vncserver binary/process inside the container ====="
+          sleep 3
+
+          echo "===== Verifying VNC server is now listening on 5900 ====="
+          docker exec redroid sh -c "netstat -tlnp 2>/dev/null | grep 5900 || ss -tlnp 2>/dev/null | grep 5900 || echo 'STILL NOTHING LISTENING'"
           docker exec redroid sh -c "ps -ef | grep -i vnc || echo 'no vnc process running'"
-          docker exec redroid sh -c "which redroid-vncserver 2>/dev/null || find / -iname '*vncserver*' 2>/dev/null | head -5 || echo 'no vncserver binary found'"
 
       - name: Start Ngrok Tunnel & Print Connection Info
         run: |
