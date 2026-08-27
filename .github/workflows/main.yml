@@ -47,30 +47,25 @@ jobs:
             androidboot.hardware=redroid \
             androidboot.redroid_gpu_mode=guest
 
-      - name: Launch WebRTC Visual Touch Screen Server
+      - name: Start TCP Tunnel & Generate Connection Details
         run: |
-          docker run -d --name ws-scrcpy \
-            --net=host \
-            -e ADB_SERVER_SOCKET=tcp:localhost:5555 \
-            emptyhere/ws-scrcpy:latest || true
-
-      - name: Connect ADB & Start Tunnel
-        run: |
-          sleep 15
-          adb connect 127.0.0.1:5555 || true
-          
-          # Specific device targeting fix for Navigation Bar
-          adb -s 127.0.0.1:5555 shell settings put global policy_control null
-          
-          ngrok http 8000 --log=stdout > ngrok.log &
+          sleep 10
+          # Ngrok TCP Tunnel on Android ADB Port 5555
+          ngrok tcp 5555 --log=stdout > ngrok.log &
           sleep 5
 
-          NGROK_URL=$(curl -s http://localhost:4040/api/tunnels | grep -o 'https://[^"]*' | head -n 1)
-          
+          # Extract Public TCP URL
+          NGROK_TCP_URL=$(curl -s http://localhost:4040/api/tunnels | grep -o 'tcp://[^"]*' | head -n 1)
+          RDP_FORMAT_ADDRESS=$(echo $NGROK_TCP_URL | sed 's/tcp:\/\///')
+
           echo "============================================================"
-          echo "       GAMING-OPTIMIZED ANDROID IS LIVE                      "
+          echo "       ANDROID GAMING CLOUD OS IS RUNNING READY            "
           echo "============================================================"
-          echo " Direct Screen URL : $NGROK_URL"
+          echo " Ngrok TCP Address : $RDP_FORMAT_ADDRESS"
+          echo " Username          : root (Not Required for Direct ADB)"
+          echo " Password          : (No Password / Open Connection)"
+          echo "============================================================"
+          echo " Connect via Scrcpy / ADB: adb connect $RDP_FORMAT_ADDRESS"
           echo "============================================================"
 
       - name: Keep Tunnel Active
