@@ -18,7 +18,7 @@ jobs:
       - name: Fast System Setup
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends adb curl tar openssl unzip xvfb x11vnc novnc websockify
+          sudo apt-get install -y --no-install-recommends adb curl tar openssl unzip xvfb x11vnc novnc websockify libpulse0 pulseaudio alsa-utils
 
       - name: Enable KVM access
         run: |
@@ -137,10 +137,6 @@ jobs:
         run: |
           mkdir -p /tmp/apks && cd /tmp/apks
 
-          # files.aurorastore.org no longer resolves - project's releases now
-          # live on auroraoss.com. Try that first, then fall back to
-          # F-Droid's mirror if the primary host is ever unreachable, so a
-          # single dead domain doesn't fail the whole job again.
           set -e
           URLS=(
             "https://auroraoss.com/files/AuroraStore/Release/AuroraStore-4.8.4.apk"
@@ -165,13 +161,6 @@ jobs:
           echo "Downloaded from $DOWNLOADED"
           adb install -r -g aurora.apk
 
-      # Replaces the old scrcpy -> ffmpeg MJPEG pipeline. MJPEG was
-      # view-only: it could show the screen but couldn't send clicks or
-      # keystrokes back to the device. This approach runs the emulator on
-      # a real (virtual) X display via Xvfb, grabs that display with
-      # x11vnc, and serves it through noVNC's web client — so the user
-      # gets a fully interactive session (mouse + keyboard) in a plain
-      # browser tab, not just a passive video feed.
       - name: Start VNC + noVNC Web Client
         run: |
           x11vnc -display :1 -forever -shared -nopw -rfbport 5900 > x11vnc.log 2>&1 &
