@@ -1,4 +1,4 @@
-name: Fast & Optimized Android Cloud (Fixed)
+name: Fast & Optimized Android Cloud (Real VNC)
 
 on:
   push:
@@ -20,7 +20,7 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
             adb curl tar openssl unzip \
-            xvfb x11vnc novnc websockify \
+            xvfb x11vnc \
             libpulse0 pulseaudio alsa-utils \
             libgl1 libglu1-mesa \
             libxkbcommon-x11-0 libxcb-cursor0 libxcb-xinerama0 \
@@ -184,61 +184,65 @@ jobs:
           echo "Downloaded from $DOWNLOADED"
           adb install -r -g aurora.apk
 
-      - name: Start VNC + noVNC Web Client
+      - name: Start Real VNC Server (password protected)
         run: |
-          x11vnc -display :1 -forever -shared -nopw -rfbport 5900 > x11vnc.log 2>&1 &
+          mkdir -p ~/.vnc
+          x11vnc -storepasswd "${{ secrets.VNC_PASSWORD }}" ~/.vnc/passwd
+          x11vnc -display :1 -forever -shared -rfbauth ~/.vnc/passwd -rfbport 5900 > x11vnc.log 2>&1 &
           sleep 2
 
-          websockify -D --web=/usr/share/novnc 6080 localhost:5900 > websockify.log 2>&1 &
-
-          echo "Waiting for noVNC web client to come up..."
-          for i in $(seq 1 30); do
-            if curl -sf -o /dev/null http://127.0.0.1:6080/vnc.html --max-time 2; then
-              echo "noVNC is up."
-              break
-            fi
-            sleep 2
-          done
-
-          if ! curl -sf -o /dev/null http://127.0.0.1:6080/vnc.html --max-time 2; then
-            echo "::error::noVNC web client never came up"
-            echo "--- x11vnc.log ---"; cat x11vnc.log
-            echo "--- websockify.log ---"; cat websockify.log
+          if ! pgrep -f "x11vnc" > /dev/null; then
+            echo "::error::x11vnc failed to start"
+            cat x11vnc.log
             exit 1
           fi
+          echo "x11vnc running on port 5900"
 
-      - name: Start Ngrok & Show Summary Link
+      - name: Start Ngrok TCP Tunnel & Show Connect Info
         run: |
-          ngrok http 6080 --log=stdout > ngrok_web.log &
+          ngrok tcp 5900 --log=stdout > ngrok_tcp.log &
 
-          WEB_TUNNEL=""
+          TCP_TUNNEL=""
           for i in $(seq 1 15); do
-            WEB_TUNNEL=$(curl -s http://localhost:4040/api/tunnels | python3 -c "
+            TCP_TUNNEL=$(curl -s http://localhost:4040/api/tunnels | python3 -c "
           import json,sys
           try:
               data = json.load(sys.stdin)
               for t in data.get('tunnels', []):
-                  if t.get('proto') == 'https':
+                  if t.get('proto') == 'tcp':
                       print(t.get('public_url'))
           except Exception:
               pass
           ")
-            if [ -n "$WEB_TUNNEL" ]; then
+            if [ -n "$TCP_TUNNEL" ]; then
               break
             fi
             sleep 2
           done
 
-          if [ -z "$WEB_TUNNEL" ]; then
-            echo "::error::Ngrok tunnel URL never became available"
-            cat ngrok_web.log
+          if [ -z "$TCP_TUNNEL" ]; then
+            echo "::error::Ngrok TCP tunnel never became available"
+            cat ngrok_tcp.log
             exit 1
           fi
 
-          STREAM_URL="$WEB_TUNNEL/vnc.html?autoconnect=true&resize=scale"
-          echo "# 🚀 FAST ONE-CLICK CONNECT LINK" >> $GITHUB_STEP_SUMMARY
-          echo "## 👉 [$STREAM_URL]($STREAM_URL)" >> $GITHUB_STEP_SUMMARY
-          echo "(opens an interactive noVNC session — mouse & keyboard work directly on the device)" >> $GITHUB_STEP_SUMMARY
+          # TCP_TUNNEL looks like: tcp://0.tcp.ngrok.io:12345
+          HOST_PORT=$(echo "$TCP_TUNNEL" | sed 's#tcp://##')
+          HOST=$(echo "$HOST_PORT" | cut -d: -f1)
+          PORT=$(echo "$HOST_PORT" | cut -d: -f2)
+
+          echo "# 🚀 REAL VNC CONNECT INFO" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Host:** \`$HOST\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Port:** \`$PORT\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Full Address:** \`$HOST_PORT\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Password:** stored in the \`VNC_PASSWORD\` secret" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "---" >> $GITHUB_STEP_SUMMARY
+          echo "### 📱 How to connect" >> $GITHUB_STEP_SUMMARY
+          echo "1. Install a VNC client app (e.g. **RealVNC Viewer** or **bVNC**)." >> $GITHUB_STEP_SUMMARY
+          echo "2. Add a new connection using the Host and Port above." >> $GITHUB_STEP_SUMMARY
+          echo "3. Enter the password from your \`VNC_PASSWORD\` secret when prompted." >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "---" >> $GITHUB_STEP_SUMMARY
           echo "### 🆔 Fresh Identity Applied:" >> $GITHUB_STEP_SUMMARY
