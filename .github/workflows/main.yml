@@ -129,7 +129,33 @@ jobs:
       - name: Install Aurora Play Store (Guaranteed Fix)
         run: |
           mkdir -p /tmp/apks && cd /tmp/apks
-          curl -sSL -o aurora.apk "https://files.aurorastore.org/AuroraStore/Release/AuroraStore-4.5.1.apk"
+
+          # files.aurorastore.org no longer resolves - project's releases now
+          # live on auroraoss.com. Try that first, then fall back to
+          # F-Droid's mirror if the primary host is ever unreachable, so a
+          # single dead domain doesn't fail the whole job again.
+          set -e
+          URLS=(
+            "https://auroraoss.com/files/AuroraStore/Release/AuroraStore-4.8.4.apk"
+            "https://f-droid.org/repo/com.aurora.store_59.apk"
+          )
+
+          DOWNLOADED=""
+          for url in "${URLS[@]}"; do
+            echo "Trying: $url"
+            if curl -sSL -f -o aurora.apk "$url"; then
+              DOWNLOADED="$url"
+              break
+            fi
+            echo "Failed: $url"
+          done
+
+          if [ -z "$DOWNLOADED" ]; then
+            echo "::error::Could not download Aurora Store APK from any known source"
+            exit 1
+          fi
+
+          echo "Downloaded from $DOWNLOADED"
           adb install -r -g aurora.apk
 
       - name: Run Ultra-Fast Scrcpy Web Server (Pre-built Image)
