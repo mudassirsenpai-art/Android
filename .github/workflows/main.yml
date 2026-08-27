@@ -70,22 +70,28 @@ jobs:
         run: |
           PKG="net.christianbeier.droidvnc_ng"
 
-          ASSET_URL=$(curl -s https://api.github.com/repos/bk138/droidVNC-NG/releases/latest \
-            | python3 -c "
-          import json,sys
+          cat > /tmp/find_apk.py << 'PYEOF'
+          import json, sys
           data = json.load(sys.stdin)
-          for a in data.get('assets', []):
+          assets = data.get('assets', [])
+          url = None
+          for a in assets:
               name = a.get('name', '')
               if name.endswith('.apk') and ('x86_64' in name or 'universal' in name):
-                  print(a['browser_download_url'])
+                  url = a['browser_download_url']
                   break
-          else:
-              for a in data.get('assets', []):
-                  if a.get('name','').endswith('.apk'):
-                      print(a['browser_download_url'])
+          if url is None:
+              for a in assets:
+                  if a.get('name', '').endswith('.apk'):
+                      url = a['browser_download_url']
                       break
-          ")
+          if url:
+              print(url)
+          PYEOF
 
+          ASSET_URL=$(curl -s https://api.github.com/repos/bk138/droidVNC-NG/releases/latest | python3 /tmp/find_apk.py)
+
+          echo "APK URL: $ASSET_URL"
           wget -q "$ASSET_URL" -O droidvncng.apk
           adb -s 127.0.0.1:5555 install -r droidvncng.apk
 
@@ -112,28 +118,32 @@ jobs:
         run: |
           ngrok tcp 5900 --log=stdout > ngrok_vnc.log &
 
-          for i in $(seq 1 15); do
-            TUNNEL_COUNT=$(curl -s http://localhost:4040/api/tunnels | python3 -c "
-          import json,sys
+          cat > /tmp/count_tunnels.py << 'PYEOF'
+          import json, sys
           try:
               data = json.load(sys.stdin)
               print(len(data.get('tunnels', [])))
           except Exception:
               print(0)
-          " 2>/dev/null || echo 0)
+          PYEOF
+
+          cat > /tmp/get_vnc_url.py << 'PYEOF'
+          import json, sys
+          data = json.load(sys.stdin)
+          for t in data.get('tunnels', []):
+              if t.get('proto') == 'tcp':
+                  print(t.get('public_url'))
+          PYEOF
+
+          for i in $(seq 1 15); do
+            TUNNEL_COUNT=$(curl -s http://localhost:4040/api/tunnels | python3 /tmp/count_tunnels.py 2>/dev/null || echo 0)
             if [ "$TUNNEL_COUNT" -ge "1" ]; then
               break
             fi
             sleep 2
           done
 
-          VNC_TUNNEL=$(curl -s http://localhost:4040/api/tunnels | python3 -c "
-          import json,sys
-          data = json.load(sys.stdin)
-          for t in data.get('tunnels', []):
-              if t.get('proto') == 'tcp':
-                  print(t.get('public_url'))
-          ")
+          VNC_TUNNEL=$(curl -s http://localhost:4040/api/tunnels | python3 /tmp/get_vnc_url.py)
 
           echo "============================================================"
           echo "       ANDROID CLOUD (GAPPS + CHROME + PLAY STORE)          "
