@@ -27,11 +27,12 @@ jobs:
           sudo mv ngrok /usr/local/bin/
           ngrok config add-authtoken ${{ secrets.NGROK_AUTHTOKEN }}
 
-      - name: Run Redroid With GApps (Play Store + Chrome)
+      - name: Run Redroid With GApps + Native VNC (No App, No Consent Dialog)
         run: |
           docker run -d --name redroid --privileged \
             --pull always \
             -p 5555:5555 \
+            -p 5900:5900 \
             aureliolo/redroid:14.0.0_amd64_with_gapps \
             androidboot.redroid_width=1080 \
             androidboot.redroid_height=1920 \
@@ -39,7 +40,8 @@ jobs:
             androidboot.redroid_dpi=420 \
             androidboot.hardware=redroid \
             androidboot.redroid_gpu_mode=guest \
-            ro.setupwizard.mode=DISABLED
+            ro.setupwizard.mode=DISABLED \
+            ro.rfb.port=5900
 
       - name: Connect ADB & Wait For Boot
         run: |
@@ -66,108 +68,8 @@ jobs:
 
           adb -s 127.0.0.1:5555 shell settings put global policy_control null
 
-      - name: Install & Start VNC Server (droidVNC-NG)
-        run: |
-          PKG="net.christianbeier.droidvnc_ng"
-
-          cat > /tmp/find_apk.py << 'PYEOF'
-          import json, sys
-          data = json.load(sys.stdin)
-          assets = data.get('assets', [])
-          url = None
-          for a in assets:
-              name = a.get('name', '')
-              if name.endswith('.apk') and ('x86_64' in name or 'universal' in name):
-                  url = a['browser_download_url']
-                  break
-          if url is None:
-              for a in assets:
-                  if a.get('name', '').endswith('.apk'):
-                      url = a['browser_download_url']
-                      break
-          if url:
-              print(url)
-          PYEOF
-
-          ASSET_URL=$(curl -s https://api.github.com/repos/bk138/droidVNC-NG/releases/latest | python3 /tmp/find_apk.py)
-
-          echo "APK URL: $ASSET_URL"
-          wget -q "$ASSET_URL" -O droidvncng.apk
-          adb -s 127.0.0.1:5555 install -r droidvncng.apk
-
-          adb -s 127.0.0.1:5555 shell appops set $PKG SYSTEM_ALERT_WINDOW allow || true
-          adb -s 127.0.0.1:5555 shell pm grant $PKG android.permission.POST_NOTIFICATIONS || true
-
-          # Launch the app's main activity first, so the app's process is alive
-          adb -s 127.0.0.1:5555 shell am start -n $PKG/.MainActivity
-          sleep 3
-
-          # Trigger server start via the app's public intent interface (MainService is the real component name)
-          adb -s 127.0.0.1:5555 shell am start-foreground-service \
-            -a $PKG.ACTION_START \
-            $PKG/net.christianbeier.droidvnc_ng.MainService || \
-          adb -s 127.0.0.1:5555 shell am startservice \
-            -a $PKG.ACTION_START \
-            $PKG/net.christianbeier.droidvnc_ng.MainService || true
-
-          sleep 2
-
-          # Android requires an on-screen tap to grant MediaProjection (screen capture) consent -
-          # this cannot be granted purely via adb shell permissions, so we auto-tap the system
-          # "Start now" / "Allow" button that appears on the projection consent dialog.
-          # Dump the UI, find the affirmative button, and tap its center coordinates.
-          adb -s 127.0.0.1:5555 shell uiautomator dump /sdcard/ui.xml || true
-          adb -s 127.0.0.1:5555 pull /sdcard/ui.xml /tmp/ui.xml || true
-
-          if [ -f /tmp/ui.xml ]; then
-            echo "===== UI DUMP (for debugging button text/coords) ====="
-            cat /tmp/ui.xml
-            echo "===== END UI DUMP ====="
-
-            cat > /tmp/tap_consent.py << 'PYEOF'
-          import re, subprocess, sys
-
-          try:
-              with open('/tmp/ui.xml', 'r', encoding='utf-8', errors='ignore') as f:
-                  content = f.read()
-          except FileNotFoundError:
-              sys.exit(0)
-
-          # Look for any clickable button-like node with affirmative text
-          keywords = ['start now', 'allow', 'ok', 'accept', 'continue', 'yes', 'grant']
-          pattern = re.compile(r'<node[^>]*text="([^"]*)"[^>]*bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"')
-
-          candidates = []
-          for match in pattern.finditer(content):
-              text, x1, y1, x2, y2 = match.groups()
-              if text.strip() and any(k in text.lower() for k in keywords):
-                  cx = (int(x1) + int(x2)) // 2
-                  cy = (int(y1) + int(y2)) // 2
-                  candidates.append((text, cx, cy))
-
-          print(f"Found {len(candidates)} candidate button(s): {candidates}")
-
-          if candidates:
-              text, cx, cy = candidates[-1]  # prefer the last match (often the primary/rightmost button)
-              print(f"Tapping '{text}' at ({cx},{cy})")
-              subprocess.run(['adb', '-s', '127.0.0.1:5555', 'shell', 'input', 'tap', str(cx), str(cy)])
-          else:
-              print("No matching button found in UI dump.")
-          PYEOF
-            python3 /tmp/tap_consent.py || true
-            sleep 2
-
-            # Re-dump after tap to confirm dialog is gone, and log it too
-            adb -s 127.0.0.1:5555 shell uiautomator dump /sdcard/ui2.xml || true
-            adb -s 127.0.0.1:5555 pull /sdcard/ui2.xml /tmp/ui2.xml || true
-            echo "===== UI DUMP AFTER TAP ====="
-            cat /tmp/ui2.xml 2>/dev/null || echo "(no second dump)"
-            echo "===== END ====="
-          fi
-
-          adb -s 127.0.0.1:5555 forward tcp:5900 tcp:5900
-
-          echo "droidVNC-NG installed and started. Port 5900 forwarded."
+          # Confirm the native VNC server is actually listening inside the container
+          adb -s 127.0.0.1:5555 shell getprop ro.rfb.port || true
 
       - name: Start Ngrok Tunnel & Print Connection Info
         run: |
@@ -210,6 +112,8 @@ jobs:
           echo "    (strip tcp:// prefix, use host:port only)"
           echo " 3. Connect - no password set by default."
           echo ""
+          echo " This uses redroid's built-in VNC server (ro.rfb.port)."
+          echo " No app install, no on-screen permission dialog needed."
           echo "============================================================"
 
       - name: Keep Session Active
