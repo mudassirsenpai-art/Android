@@ -120,6 +120,10 @@ jobs:
           adb -s 127.0.0.1:5555 pull /sdcard/ui.xml /tmp/ui.xml || true
 
           if [ -f /tmp/ui.xml ]; then
+            echo "===== UI DUMP (for debugging button text/coords) ====="
+            cat /tmp/ui.xml
+            echo "===== END UI DUMP ====="
+
             cat > /tmp/tap_consent.py << 'PYEOF'
           import re, subprocess, sys
 
@@ -129,21 +133,36 @@ jobs:
           except FileNotFoundError:
               sys.exit(0)
 
-          # Look for buttons commonly used on the screen-capture consent dialog
-          keywords = ['Start now', 'start now', 'Allow', 'ALLOW', 'OK']
+          # Look for any clickable button-like node with affirmative text
+          keywords = ['start now', 'allow', 'ok', 'accept', 'continue', 'yes', 'grant']
           pattern = re.compile(r'<node[^>]*text="([^"]*)"[^>]*bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"')
 
+          candidates = []
           for match in pattern.finditer(content):
               text, x1, y1, x2, y2 = match.groups()
-              if any(k in text for k in keywords) and text.strip():
+              if text.strip() and any(k in text.lower() for k in keywords):
                   cx = (int(x1) + int(x2)) // 2
                   cy = (int(y1) + int(y2)) // 2
-                  print(f"Tapping '{text}' at ({cx},{cy})")
-                  subprocess.run(['adb', '-s', '127.0.0.1:5555', 'shell', 'input', 'tap', str(cx), str(cy)])
-                  break
+                  candidates.append((text, cx, cy))
+
+          print(f"Found {len(candidates)} candidate button(s): {candidates}")
+
+          if candidates:
+              text, cx, cy = candidates[-1]  # prefer the last match (often the primary/rightmost button)
+              print(f"Tapping '{text}' at ({cx},{cy})")
+              subprocess.run(['adb', '-s', '127.0.0.1:5555', 'shell', 'input', 'tap', str(cx), str(cy)])
+          else:
+              print("No matching button found in UI dump.")
           PYEOF
             python3 /tmp/tap_consent.py || true
             sleep 2
+
+            # Re-dump after tap to confirm dialog is gone, and log it too
+            adb -s 127.0.0.1:5555 shell uiautomator dump /sdcard/ui2.xml || true
+            adb -s 127.0.0.1:5555 pull /sdcard/ui2.xml /tmp/ui2.xml || true
+            echo "===== UI DUMP AFTER TAP ====="
+            cat /tmp/ui2.xml 2>/dev/null || echo "(no second dump)"
+            echo "===== END ====="
           fi
 
           adb -s 127.0.0.1:5555 forward tcp:5900 tcp:5900
