@@ -1,4 +1,4 @@
-name: Optimized Android Cloud Gaming Phone
+name: Optimized Android Cloud Phone
 
 on:
   push:
@@ -18,9 +18,18 @@ jobs:
       - name: Install Kernel Modules & ADB
         run: |
           sudo apt-get update
-          sudo apt-get install -y linux-modules-extra-$(uname -r) adb curl tar
+          sudo apt-get install -y linux-modules-extra-$(uname -r) adb curl tar openssl
           sudo modprobe binder_linux devices="binder,hwbinder,vndbinder" || true
           sudo modprobe ashmem_linux || true
+
+      - name: Generate Random IMEI & Device Identity
+        run: |
+          RANDOM_IMEI=$(shuf -i 860000000000000-869999999999999 -n 1)
+          RANDOM_MAC=$(openssl rand -hex 6 | sed 's/\(..\)/\1:/g; s/.$//')
+          echo "GENERATED_IMEI=$RANDOM_IMEI" >> $GITHUB_ENV
+          echo "GENERATED_MAC=$RANDOM_MAC" >> $GITHUB_ENV
+          echo "New Device IMEI: $RANDOM_IMEI"
+          echo "New Device MAC: $RANDOM_MAC"
 
       - name: Setup Ngrok
         run: |
@@ -34,36 +43,50 @@ jobs:
         run: |
           ngrok config add-authtoken $NGROK_AUTHTOKEN
 
-      - name: Run Gaming-Optimized Redroid Container
+      - name: Run Gaming & Smooth Optimized Redroid
         run: |
           docker run -d --name redroid --privileged \
             --pull always \
             -p 5555:5555 \
             redroid/redroid:11.0.0-latest \
-            androidboot.redroid_width=720 \
-            androidboot.redroid_height=1280 \
-            androidboot.redroid_fps=60 \
-            androidboot.redroid_dpi=320 \
+            androidboot.redroid_width=540 \
+            androidboot.redroid_height=960 \
+            androidboot.redroid_fps=30 \
+            androidboot.redroid_dpi=240 \
             androidboot.hardware=redroid \
-            androidboot.redroid_gpu_mode=guest
+            androidboot.redroid_gpu_mode=guest \
+            androidboot.redroid_imei=${{ env.GENERATED_IMEI }} \
+            androidboot.redroid_mac=${{ env.GENERATED_MAC }}
 
-      - name: Wait For Redroid To Boot
+      - name: Wait For Redroid To Boot & Connect ADB
         run: |
-          echo "Waiting for redroid container to fully boot..."
-          sleep 20
-          docker logs redroid --tail 50 || true
-
-      - name: Connect ADB (Local Sanity Check)
-        run: |
+          echo "Waiting for Redroid to start..."
+          sleep 15
           adb kill-server
           adb start-server
           adb connect 127.0.0.1:5555
           adb -s 127.0.0.1:5555 wait-for-device
-          adb -s 127.0.0.1:5555 shell settings put global policy_control null
-          adb -s 127.0.0.1:5555 shell getprop ro.build.version.release || true
-          echo "Local ADB connection to redroid confirmed."
 
-      - name: Build & Start Web Screen Server (Browser Fallback)
+      - name: Download and Install Chrome, Pawxy Browser & Play Store
+        run: |
+          mkdir -p /tmp/apks
+          cd /tmp/apks
+
+          echo "Downloading Chrome..."
+          curl -sL "https://github.com/apk-sh/apk-downloads/raw/main/chrome.apk" -o chrome.apk || true
+
+          echo "Downloading Pawxy Browser..."
+          curl -sL "https://github.com/apk-sh/apk-downloads/raw/main/pawxy.apk" -o pawxy.apk || true
+
+          echo "Downloading Play Store (Aurora Store)..."
+          curl -sL "https://files.aurorastore.org/AuroraStore/Release/AuroraStore-4.5.1.apk" -o aurorastore.apk
+
+          echo "Installing APKs into Redroid container..."
+          adb -s 127.0.0.1:5555 install -r aurorastore.apk || true
+          adb -s 127.0.0.1:5555 install -r chrome.apk || true
+          adb -s 127.0.0.1:5555 install -r pawxy.apk || true
+
+      - name: Build & Start Fast Web Screen Server
         run: |
           git clone https://github.com/NetrisTV/ws-scrcpy.git /tmp/ws-scrcpy
           cd /tmp/ws-scrcpy
@@ -96,28 +119,13 @@ jobs:
           sleep 5
           docker exec scrcpy-web adb connect 127.0.0.1:5555 || true
 
-      - name: Start Ngrok TCP Tunnel For ADB (Phone Connect)
-        run: |
-          # This exposes port 5555 (ADB) over a public TCP address,
-          # so you can adb connect from YOUR OWN PHONE (via Termux/ADB app)
-          ngrok tcp 5555 --log=stdout > ngrok_adb.log &
-          sleep 5
-
       - name: Start Ngrok HTTP Tunnel For Web Screen
         run: |
           ngrok http 8000 --log=stdout > ngrok_web.log &
           sleep 5
 
-      - name: Print Connection Info
+      - name: Display Connect URL On GitHub Screen Summary
         run: |
-          ADB_TUNNEL=$(curl -s http://localhost:4040/api/tunnels | python3 -c "
-          import json,sys
-          data = json.load(sys.stdin)
-          for t in data.get('tunnels', []):
-              if t.get('proto') == 'tcp':
-                  print(t.get('public_url'))
-          ")
-
           WEB_TUNNEL=$(curl -s http://localhost:4040/api/tunnels | python3 -c "
           import json,sys
           data = json.load(sys.stdin)
@@ -127,22 +135,18 @@ jobs:
           ")
 
           echo "============================================================"
-          echo "        GAMING ANDROID CLOUD - READY TO CONNECT              "
-          echo "============================================================"
-          echo ""
-          echo " OPTION 1: Connect from YOUR OWN PHONE (ADB)"
-          echo "   1. Install 'Termux' or any ADB client app on your phone"
-          echo "   2. Run: adb connect <HOST>:<PORT>   (see below)"
-          echo "   ADB TUNNEL   : $ADB_TUNNEL"
-          echo ""
-          echo " OPTION 2: Connect from phone BROWSER (no app needed)"
-          echo "   WEB SCREEN   : $WEB_TUNNEL"
-          echo ""
-          echo "============================================================"
-          echo " NOTE: ngrok free tier TCP address changes every run."
-          echo " Copy the ADB TUNNEL line exactly as shown above."
+          echo " CONNECT URL: $WEB_TUNNEL"
           echo "============================================================"
 
-      - name: Keep Tunnel Active
+          echo "# 🚀 Android Cloud Ready!" >> $GITHUB_STEP_SUMMARY
+          echo "### 🔗 Click to Open Android Phone:" >> $GITHUB_STEP_SUMMARY
+          echo "# [$WEB_TUNNEL]($WEB_TUNNEL)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "---" >> $GITHUB_STEP_SUMMARY
+          echo "**📱 Device Info (Fresh Instance):**" >> $GITHUB_STEP_SUMMARY
+          echo "- **IMEI:** \`${{ env.GENERATED_IMEI }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **MAC Address:** \`${{ env.GENERATED_MAC }}\`" >> $GITHUB_STEP_SUMMARY
+
+      - name: Keep Server Alive
         run: |
           while true; do sleep 300; done
