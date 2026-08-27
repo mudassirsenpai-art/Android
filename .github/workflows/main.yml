@@ -15,24 +15,17 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Install Kernel Modules & ADB
+      - name: Install Dependencies & Ngrok
         run: |
           sudo apt-get update
           sudo apt-get install -y linux-modules-extra-$(uname -r) adb curl tar wget
           sudo modprobe binder_linux devices="binder,hwbinder,vndbinder" || true
           sudo modprobe ashmem_linux || true
 
-      - name: Setup Ngrok
-        run: |
           curl -s https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz -o ngrok.tgz
           tar -xvzf ngrok.tgz
           sudo mv ngrok /usr/local/bin/
-
-      - name: Authenticate Ngrok
-        env:
-          NGROK_AUTHTOKEN: ${{ secrets.NGROK_AUTHTOKEN }}
-        run: |
-          ngrok config add-authtoken $NGROK_AUTHTOKEN
+          ngrok config add-authtoken ${{ secrets.NGROK_AUTHTOKEN }}
 
       - name: Run Redroid With GApps (Play Store + Chrome)
         run: |
@@ -48,15 +41,13 @@ jobs:
             androidboot.redroid_gpu_mode=guest \
             ro.setupwizard.mode=DISABLED
 
-      - name: Connect ADB & Wait For Fast Boot
+      - name: Connect ADB & Wait For Boot
         run: |
           adb kill-server
           adb start-server
 
-          echo "Polling for redroid to accept ADB connection..."
           for i in $(seq 1 30); do
             if adb connect 127.0.0.1:5555 2>&1 | grep -q "connected"; then
-              echo "ADB connected on attempt $i."
               break
             fi
             sleep 1
@@ -64,7 +55,6 @@ jobs:
 
           adb -s 127.0.0.1:5555 wait-for-device
 
-          echo "Polling for Android boot_completed flag..."
           for i in $(seq 1 60); do
             BOOT_COMPLETED=$(adb -s 127.0.0.1:5555 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
             if [ "$BOOT_COMPLETED" = "1" ]; then
@@ -75,14 +65,11 @@ jobs:
           done
 
           adb -s 127.0.0.1:5555 shell settings put global policy_control null
-          adb -s 127.0.0.1:5555 shell getprop ro.build.version.release || true
-          echo "ADB connection to redroid (GApps) confirmed."
 
-      - name: Download, Install & Start droidVNC-NG
+      - name: Install & Start VNC Server (droidVNC-NG)
         run: |
           PKG="net.christianbeier.droidvnc_ng"
 
-          # Ask GitHub's API for the real asset URLs instead of guessing filenames
           ASSET_URL=$(curl -s https://api.github.com/repos/bk138/droidVNC-NG/releases/latest \
             | python3 -c "
           import json,sys
@@ -92,44 +79,39 @@ jobs:
               if name.endswith('.apk') and ('x86_64' in name or 'universal' in name):
                   print(a['browser_download_url'])
                   break
+          else:
+              for a in data.get('assets', []):
+                  if a.get('name','').endswith('.apk'):
+                      print(a['browser_download_url'])
+                      break
           ")
 
-          if [ -z "$ASSET_URL" ]; then
-            # fall back to first apk asset if no x86_64/universal build exists
-            ASSET_URL=$(curl -s https://api.github.com/repos/bk138/droidVNC-NG/releases/latest \
-              | python3 -c "
-          import json,sys
-          data = json.load(sys.stdin)
-          for a in data.get('assets', []):
-              if a.get('name','').endswith('.apk'):
-                  print(a['browser_download_url'])
-                  break
-          ")
-          fi
-
-          echo "Downloading: $ASSET_URL"
           wget -q "$ASSET_URL" -O droidvncng.apk
           adb -s 127.0.0.1:5555 install -r droidvncng.apk
 
-          # Grant required permissions so it can run headless without manual taps
           adb -s 127.0.0.1:5555 shell appops set $PKG SYSTEM_ALERT_WINDOW allow || true
           adb -s 127.0.0.1:5555 shell pm grant $PKG android.permission.POST_NOTIFICATIONS || true
 
-          # Start the VNC server as a foreground service (no password by default)
-          adb -s 127.0.0.1:5555 shell am start-foreground-service -n $PKG/.Server -a $PKG.ACTION_START
+          # Launch the app's main activity - the app can auto-start serving
+          adb -s 127.0.0.1:5555 shell am start -n $PKG/.MainActivity
           sleep 3
-          adb -s 127.0.0.1:5555 shell am start -n $PKG/.MainActivity || true
 
-          # Forward VNC port from container to host
+          # Trigger server start via the app's public intent interface (MainService is the real component name)
+          adb -s 127.0.0.1:5555 shell am start-foreground-service \
+            -a $PKG.ACTION_START \
+            $PKG/net.christianbeier.droidvnc_ng.MainService || \
+          adb -s 127.0.0.1:5555 shell am startservice \
+            -a $PKG.ACTION_START \
+            $PKG/net.christianbeier.droidvnc_ng.MainService || true
+
           adb -s 127.0.0.1:5555 forward tcp:5900 tcp:5900
 
-          echo "droidVNC-NG installed, running, and port 5900 forwarded."
+          echo "droidVNC-NG installed and started. Port 5900 forwarded."
 
-      - name: Start Ngrok Tunnel For VNC (Real VNC Client, No ADB Needed On Phone)
+      - name: Start Ngrok Tunnel & Print Connection Info
         run: |
           ngrok tcp 5900 --log=stdout > ngrok_vnc.log &
 
-          echo "Waiting for ngrok VNC tunnel to come online..."
           for i in $(seq 1 15); do
             TUNNEL_COUNT=$(curl -s http://localhost:4040/api/tunnels | python3 -c "
           import json,sys
@@ -140,15 +122,11 @@ jobs:
               print(0)
           " 2>/dev/null || echo 0)
             if [ "$TUNNEL_COUNT" -ge "1" ]; then
-              echo "VNC tunnel is up."
               break
             fi
-            echo "Tunnel not ready yet, retrying..."
-            sleep 3
+            sleep 2
           done
 
-      - name: Print Connection Info
-        run: |
           VNC_TUNNEL=$(curl -s http://localhost:4040/api/tunnels | python3 -c "
           import json,sys
           data = json.load(sys.stdin)
@@ -162,20 +140,11 @@ jobs:
           echo "                  READY - CONNECT VIA VNC                   "
           echo "============================================================"
           echo ""
-          echo " 1. Install any VNC Viewer app on your phone"
-          echo "    (e.g. 'VNC Viewer' by RealVNC, from Play Store)"
-          echo ""
-          echo " 2. Open the app, add a new connection using:"
-          echo "    $VNC_TUNNEL"
-          echo "    (strip the tcp:// prefix, just use host:port)"
-          echo ""
+          echo " 1. Install 'VNC Viewer' (RealVNC) from Play Store"
+          echo " 2. Add new connection using: $VNC_TUNNEL"
+          echo "    (strip tcp:// prefix, use host:port only)"
           echo " 3. Connect - no password set by default."
-          echo "    You will see the real Android screen directly,"
-          echo "    with Play Store and Chrome ready to use."
           echo ""
-          echo "============================================================"
-          echo " NOTE: ngrok free tier address changes every run."
-          echo " NOTE: First boot may take a minute for GApps to settle."
           echo "============================================================"
 
       - name: Keep Session Active
