@@ -1,4 +1,4 @@
-name: Optimized Android Cloud Phone (VNC)
+name: Fast & Optimized Android Cloud
 
 on:
   push:
@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  run-android-vnc:
+  run-android-phone:
     runs-on: ubuntu-latest
     timeout-minutes: 360
 
@@ -15,39 +15,27 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Fix DNS & Install Dependencies
+      - name: Fast System Setup
         run: |
-          sudo sh -c 'echo "nameserver 8.8.8.8" > /etc/resolv.conf'
-          sudo apt-get update
-          sudo apt-get install -y linux-modules-extra-$(uname -r) adb curl tar openssl xvfb x11vnc scrcpy websockify git
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends adb curl tar openssl
           sudo modprobe binder_linux devices="binder,hwbinder,vndbinder" || true
-          sudo modprobe ashmem_linux || true
 
-      - name: Generate Random Fresh Identity (Full New Piece)
+      - name: Generate Random Fresh Identity
         run: |
-          RANDOM_IMEI=$(shuf -i 860000000000000-869999999999999 -n 1)
-          RANDOM_MAC=$(openssl rand -hex 6 | sed 's/\(..\)/\1:/g; s/.$//')
-          RANDOM_SERIAL=$(openssl rand -hex 6 | tr 'a-z' 'A-Z')
-          RANDOM_ANDROID_ID=$(openssl rand -hex 8)
-
-          echo "GENERATED_IMEI=$RANDOM_IMEI" >> $GITHUB_ENV
-          echo "GENERATED_MAC=$RANDOM_MAC" >> $GITHUB_ENV
-          echo "GENERATED_SERIAL=$RANDOM_SERIAL" >> $GITHUB_ENV
-          echo "GENERATED_ANDROID_ID=$RANDOM_ANDROID_ID" >> $GITHUB_ENV
+          echo "GENERATED_IMEI=$(shuf -i 860000000000000-869999999999999 -n 1)" >> $GITHUB_ENV
+          echo "GENERATED_MAC=$(openssl rand -hex 6 | sed 's/\(..\)/\1:/g; s/.$//')" >> $GITHUB_ENV
+          echo "GENERATED_SERIAL=$(openssl rand -hex 6 | tr 'a-z' 'A-Z')" >> $GITHUB_ENV
+          echo "GENERATED_ANDROID_ID=$(openssl rand -hex 8)" >> $GITHUB_ENV
 
       - name: Setup Ngrok
         run: |
           curl -s https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz -o ngrok.tgz
           tar -xvzf ngrok.tgz
           sudo mv ngrok /usr/local/bin/
+          ngrok config add-authtoken ${{ secrets.NGROK_AUTHTOKEN }}
 
-      - name: Authenticate Ngrok
-        env:
-          NGROK_AUTHTOKEN: ${{ secrets.NGROK_AUTHTOKEN }}
-        run: |
-          ngrok config add-authtoken $NGROK_AUTHTOKEN
-
-      - name: Run Smooth Optimized Redroid
+      - name: Run Redroid Container (Low Latency Setup)
         run: |
           docker run -d --name redroid --privileged \
             --pull always \
@@ -63,55 +51,53 @@ jobs:
             androidboot.redroid_mac=${{ env.GENERATED_MAC }} \
             androidboot.redroid_serialno=${{ env.GENERATED_SERIAL }}
 
-      - name: Wait For Redroid & Inject Fresh Android ID
+      - name: Wait For Full System Boot & Inject Identity
         run: |
-          echo "Waiting for Redroid to start..."
-          sleep 15
           adb kill-server
           adb start-server
           adb connect 127.0.0.1:5555
           adb -s 127.0.0.1:5555 wait-for-device
+
+          echo "Waiting for Android Package Manager service..."
+          while [ "$(adb -s 127.0.0.1:5555 shell getprop sys.boot_completed | tr -d '\r')" != "1" ]; do
+            sleep 2
+          done
+          echo "Android System Ready!"
+
           adb -s 127.0.0.1:5555 shell settings put secure android_id ${{ env.GENERATED_ANDROID_ID }}
 
-      - name: Download and Install Play Store (Aurora Store) & Browser
+      - name: Install Aurora Play Store (Guaranteed Fix)
         run: |
-          mkdir -p /tmp/apks
-          cd /tmp/apks
+          mkdir -p /tmp/apks && cd /tmp/apks
+          curl -sSL -o aurora.apk "https://files.aurorastore.org/AuroraStore/Release/AuroraStore-4.5.1.apk"
+          adb -s 127.0.0.1:5555 install -r -g aurora.apk || true
 
-          echo "Downloading Aurora Store..."
-          curl -sL -o aurorastore.apk "https://github.com/AuroraOSS/AuroraStore/releases/download/4.3.5/AuroraStore-4.3.5-Stable.release.apk" || true
-
-          if [ -f aurorastore.apk ]; then
-            adb -s 127.0.0.1:5555 install -r aurorastore.apk || true
-            echo "Aurora Store installed successfully!"
-          fi
-
-      - name: Setup VNC & noVNC Browser Stream
+      - name: Run Ultra-Fast Scrcpy Web Server (Pre-built Image)
         run: |
-          git clone https://github.com/novnc/noVNC.git /opt/novnc
-          
-          # Start Virtual Framebuffer
-          Xvfb :99 -screen 0 540x960x24 &
-          export DISPLAY=:99
-          
-          # Run scrcpy optimized for slow networks
-          scrcpy -s 127.0.0.1:5555 --max-size 540 --bit-rate 800k --max-fps 20 &
-          
-          # Start VNC server
-          x11vnc -display :99 -forever -shared -nopw -noxdamage &
-          
-          # Start WebSockets proxy for browser (noVNC on port 8000)
-          /opt/novnc/utils/novnc_proxy --vnc localhost:5900 --listen 8000 &
-          
-          sleep 5
+          git clone https://github.com/NetrisTV/ws-scrcpy.git /tmp/ws-scrcpy
+          cd /tmp/ws-scrcpy
 
-      - name: Start Ngrok HTTP Tunnel For VNC Stream
+          cat > Dockerfile << 'DOCKEREOF'
+          FROM node:18-bullseye-slim
+          RUN apt-get update && apt-get install -y android-tools-adb && rm -rf /var/lib/apt/lists/*
+          WORKDIR /app
+          COPY package*.json ./
+          RUN npm ci --only=production
+          COPY . .
+          EXPOSE 8000
+          CMD ["npm", "start"]
+          DOCKEREOF
+
+          docker build -t local/ws-scrcpy .
+          docker run -d --name scrcpy-web --restart=always -p 8000:8000 --net=host local/ws-scrcpy
+          sleep 3
+          docker exec scrcpy-web adb connect 127.0.0.1:5555 || true
+
+      - name: Start Ngrok & Show Summary Link
         run: |
           ngrok http 8000 --log=stdout > ngrok_web.log &
-          sleep 5
+          sleep 4
 
-      - name: Display 1-Click Link On Summary Screen
-        run: |
           WEB_TUNNEL=$(curl -s http://localhost:4040/api/tunnels | python3 -c "
           import json,sys
           data = json.load(sys.stdin)
@@ -120,16 +106,16 @@ jobs:
                   print(t.get('public_url'))
           ")
 
-          echo "# 🚀 ONE-CLICK VNC CONNECT LINK" >> $GITHUB_STEP_SUMMARY
-          echo "## 👉 [$WEB_TUNNEL/vnc.html?autoconnect=true&resize=scale]($WEB_TUNNEL/vnc.html?autoconnect=true&resize=scale)" >> $GITHUB_STEP_SUMMARY
+          echo "# 🚀 FAST ONE-CLICK CONNECT LINK" >> $GITHUB_STEP_SUMMARY
+          echo "## 👉 [$WEB_TUNNEL]($WEB_TUNNEL)" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "---" >> $GITHUB_STEP_SUMMARY
           echo "### 🆔 Fresh Identity Applied:" >> $GITHUB_STEP_SUMMARY
           echo "- **IMEI:** \`${{ env.GENERATED_IMEI }}\`" >> $GITHUB_STEP_SUMMARY
           echo "- **MAC Address:** \`${{ env.GENERATED_MAC }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "- **Serial Number:** \`${{ env.GENERATED_SERIAL }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Serial:** \`${{ env.GENERATED_SERIAL }}\`" >> $GITHUB_STEP_SUMMARY
           echo "- **Android ID:** \`${{ env.GENERATED_ANDROID_ID }}\`" >> $GITHUB_STEP_SUMMARY
 
-      - name: Keep Server Alive
+      - name: Keep Alive
         run: |
           while true; do sleep 300; done
