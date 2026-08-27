@@ -1,4 +1,4 @@
-name: Optimized Android Cloud Gaming Phone
+name: RDP Supported Android Cloud OS
 
 on:
   push:
@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  run-android-gaming:
+  run-android-rdp:
     runs-on: ubuntu-latest
     timeout-minutes: 360
 
@@ -15,12 +15,16 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Install Kernel Modules & Libs
+      - name: Install RDP & Desktop Environment
         run: |
           sudo apt-get update
-          sudo apt-get install -y linux-modules-extra-$(uname -r) adb curl tar
-          sudo modprobe binder_linux devices="binder,hwbinder,vndbinder" || true
-          sudo modprobe ashmem_linux || true
+          sudo apt-get install -y xrdp lxde adb curl tar
+          sudo systemctl enable xrdp
+          echo "exec startlxde" > ~/.xsession
+          sudo service xrdp restart
+          
+          # Set Password for RDP User
+          echo "runneradmin:P@ssw0rd!" | sudo chpasswd
 
       - name: Setup Ngrok
         run: |
@@ -34,8 +38,9 @@ jobs:
         run: |
           ngrok config add-authtoken $NGROK_AUTHTOKEN
 
-      - name: Run Gaming-Optimized Android OS
+      - name: Start Redroid Android OS
         run: |
+          sudo modprobe binder_linux devices="binder,hwbinder,vndbinder" || true
           docker run -d --name redroid --privileged \
             --pull always \
             -p 5555:5555 \
@@ -47,27 +52,24 @@ jobs:
             androidboot.hardware=redroid \
             androidboot.redroid_gpu_mode=guest
 
-      - name: Start TCP Tunnel & Generate Connection Details
+      - name: Start Ngrok RDP Tunnel & Print Info
         run: |
           sleep 10
-          # Ngrok TCP Tunnel on Android ADB Port 5555
-          ngrok tcp 5555 --log=stdout > ngrok.log &
+          # Expose RDP Port 3389
+          ngrok tcp 3389 --log=stdout > ngrok.log &
           sleep 5
 
-          # Extract Public TCP URL
           NGROK_TCP_URL=$(curl -s http://localhost:4040/api/tunnels | grep -o 'tcp://[^"]*' | head -n 1)
-          RDP_FORMAT_ADDRESS=$(echo $NGROK_TCP_URL | sed 's/tcp:\/\///')
+          RDP_ADDRESS=$(echo $NGROK_TCP_URL | sed 's/tcp:\/\///')
 
-          echo "============================================================"
-          echo "       ANDROID GAMING CLOUD OS IS RUNNING READY            "
-          echo "============================================================"
-          echo " Ngrok TCP Address : $RDP_FORMAT_ADDRESS"
-          echo " Username          : root (Not Required for Direct ADB)"
-          echo " Password          : (No Password / Open Connection)"
-          echo "============================================================"
-          echo " Connect via Scrcpy / ADB: adb connect $RDP_FORMAT_ADDRESS"
-          echo "============================================================"
+          echo "==============================================="
+          echo "       ANDROID RDP CONNECT DETAILS             "
+          echo "==============================================="
+          echo " RDP Address : $RDP_ADDRESS"
+          echo " Username    : runneradmin"
+          echo " Password    : P@ssw0rd!"
+          echo "==============================================="
 
-      - name: Keep Tunnel Active
+      - name: Keep Alive
         run: |
           while true; do sleep 300; done
