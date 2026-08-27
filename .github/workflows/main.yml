@@ -1,4 +1,4 @@
-name: Optimized Android Cloud Gaming Phone
+name: Android Cloud with GApps + VNC
 
 on:
   push:
@@ -18,7 +18,7 @@ jobs:
       - name: Install Kernel Modules & ADB
         run: |
           sudo apt-get update
-          sudo apt-get install -y linux-modules-extra-$(uname -r) adb curl tar
+          sudo apt-get install -y linux-modules-extra-$(uname -r) adb curl tar wget
           sudo modprobe binder_linux devices="binder,hwbinder,vndbinder" || true
           sudo modprobe ashmem_linux || true
 
@@ -34,83 +34,109 @@ jobs:
         run: |
           ngrok config add-authtoken $NGROK_AUTHTOKEN
 
-      - name: Run Gaming-Optimized Redroid Container
+      - name: Run Redroid With GApps (Play Store + Chrome)
         run: |
           docker run -d --name redroid --privileged \
             --pull always \
             -p 5555:5555 \
-            redroid/redroid:11.0.0-latest \
-            androidboot.redroid_width=720 \
-            androidboot.redroid_height=1280 \
+            aureliolo/redroid:14.0.0_amd64_with_gapps \
+            androidboot.redroid_width=1080 \
+            androidboot.redroid_height=1920 \
             androidboot.redroid_fps=60 \
-            androidboot.redroid_dpi=320 \
+            androidboot.redroid_dpi=420 \
             androidboot.hardware=redroid \
-            androidboot.redroid_gpu_mode=guest
+            androidboot.redroid_gpu_mode=guest \
+            ro.setupwizard.mode=DISABLED
 
-      - name: Wait For Redroid To Boot
-        run: |
-          echo "Waiting for redroid container to fully boot..."
-          sleep 20
-          docker logs redroid --tail 50 || true
-
-      - name: Connect ADB (Local Sanity Check)
+      - name: Connect ADB & Wait For Fast Boot
         run: |
           adb kill-server
           adb start-server
-          adb connect 127.0.0.1:5555
+
+          echo "Polling for redroid to accept ADB connection..."
+          for i in $(seq 1 30); do
+            if adb connect 127.0.0.1:5555 2>&1 | grep -q "connected"; then
+              echo "ADB connected on attempt $i."
+              break
+            fi
+            sleep 1
+          done
+
           adb -s 127.0.0.1:5555 wait-for-device
+
+          echo "Polling for Android boot_completed flag..."
+          for i in $(seq 1 60); do
+            BOOT_COMPLETED=$(adb -s 127.0.0.1:5555 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
+            if [ "$BOOT_COMPLETED" = "1" ]; then
+              echo "Boot completed after ~${i}s."
+              break
+            fi
+            sleep 1
+          done
+
           adb -s 127.0.0.1:5555 shell settings put global policy_control null
           adb -s 127.0.0.1:5555 shell getprop ro.build.version.release || true
-          echo "Local ADB connection to redroid confirmed."
+          echo "ADB connection to redroid (GApps) confirmed."
 
-      - name: Build & Start Web Screen Server (Browser Fallback)
+      - name: Download & Install droidVNC-NG
         run: |
-          git clone https://github.com/NetrisTV/ws-scrcpy.git /tmp/ws-scrcpy
-          cd /tmp/ws-scrcpy
+          wget -q "https://github.com/bk138/droidVNC-NG/releases/download/v2.20.3/droidVNC-NG-2.20.3-arm64-v8a.apk" -O droidvncng-arm64.apk || true
+          wget -q "https://github.com/bk138/droidVNC-NG/releases/download/v2.20.3/droidVNC-NG-2.20.3-x86_64.apk" -O droidvncng.apk
 
-          cat > Dockerfile << 'DOCKEREOF'
-          FROM node:18-bullseye-slim AS builder
-          RUN apt-get update && apt-get install -y python3 make g++ && rm -rf /var/lib/apt/lists/*
-          WORKDIR /app
-          COPY . .
-          RUN npm install
-          RUN npm run dist
+          adb -s 127.0.0.1:5555 install -r droidvncng.apk
 
-          FROM node:18-bullseye-slim
-          RUN apt-get update && apt-get install -y python3 make g++ android-tools-adb && rm -rf /var/lib/apt/lists/*
-          WORKDIR /app
-          COPY --from=builder /app/dist /app
-          RUN npm install
-          EXPOSE 8000
-          CMD ["npm", "start"]
-          DOCKEREOF
+          echo "droidVNC-NG installed."
 
-          docker build -t local/ws-scrcpy .
+      - name: Grant Permissions & Start VNC Server
+        run: |
+          PKG="net.christianbeier.droidvnc_ng"
 
-          docker run -d --name scrcpy-web \
-            --restart=always \
-            -p 8000:8000 \
-            --net=host \
-            local/ws-scrcpy
+          # Grant required permissions so it can run headless without manual taps
+          adb -s 127.0.0.1:5555 shell appops set $PKG SYSTEM_ALERT_WINDOW allow || true
+          adb -s 127.0.0.1:5555 shell pm grant $PKG android.permission.POST_NOTIFICATIONS || true
+
+          # Start the VNC server as a foreground service, no port password for simplicity
+          # (You can add -e PORT and -e PASSWORD extras if you want a password-protected server)
+          adb -s 127.0.0.1:5555 shell am start-foreground-service \
+            -n $PKG/.Server \
+            -a $PKG.ACTION_START
 
           sleep 5
-          docker exec scrcpy-web adb connect 127.0.0.1:5555 || true
+          adb -s 127.0.0.1:5555 shell am start -n $PKG/.MainActivity || true
 
-      - name: Start Ngrok TCP Tunnel For ADB (Phone Connect)
-        run: |
-          # This exposes port 5555 (ADB) over a public TCP address,
-          # so you can adb connect from YOUR OWN PHONE (via Termux/ADB app)
-          ngrok tcp 5555 --log=stdout > ngrok_adb.log &
-          sleep 5
+          echo "VNC server should now be running on port 5900 inside the container."
 
-      - name: Start Ngrok HTTP Tunnel For Web Screen
+      - name: Expose VNC Port From Container To Host
         run: |
-          ngrok http 8000 --log=stdout > ngrok_web.log &
-          sleep 5
+          # redroid does not natively expose the VNC port, so we forward it via adb
+          adb -s 127.0.0.1:5555 forward tcp:5900 tcp:5900
+          echo "VNC port 5900 forwarded from container to host."
+
+      - name: Start Ngrok Tunnel For VNC (Real VNC Client, No ADB Needed On Phone)
+        run: |
+          ngrok tcp 5900 --log=stdout > ngrok_vnc.log &
+
+          echo "Waiting for ngrok VNC tunnel to come online..."
+          for i in $(seq 1 15); do
+            TUNNEL_COUNT=$(curl -s http://localhost:4040/api/tunnels | python3 -c "
+          import json,sys
+          try:
+              data = json.load(sys.stdin)
+              print(len(data.get('tunnels', [])))
+          except Exception:
+              print(0)
+          " 2>/dev/null || echo 0)
+            if [ "$TUNNEL_COUNT" -ge "1" ]; then
+              echo "VNC tunnel is up."
+              break
+            fi
+            echo "Tunnel not ready yet, retrying..."
+            sleep 3
+          done
 
       - name: Print Connection Info
         run: |
-          ADB_TUNNEL=$(curl -s http://localhost:4040/api/tunnels | python3 -c "
+          VNC_TUNNEL=$(curl -s http://localhost:4040/api/tunnels | python3 -c "
           import json,sys
           data = json.load(sys.stdin)
           for t in data.get('tunnels', []):
@@ -118,31 +144,27 @@ jobs:
                   print(t.get('public_url'))
           ")
 
-          WEB_TUNNEL=$(curl -s http://localhost:4040/api/tunnels | python3 -c "
-          import json,sys
-          data = json.load(sys.stdin)
-          for t in data.get('tunnels', []):
-              if t.get('proto') == 'https':
-                  print(t.get('public_url'))
-          ")
-
           echo "============================================================"
-          echo "        GAMING ANDROID CLOUD - READY TO CONNECT              "
+          echo "       ANDROID CLOUD (GAPPS + CHROME + PLAY STORE)          "
+          echo "                  READY - CONNECT VIA VNC                   "
           echo "============================================================"
           echo ""
-          echo " OPTION 1: Connect from YOUR OWN PHONE (ADB)"
-          echo "   1. Install 'Termux' or any ADB client app on your phone"
-          echo "   2. Run: adb connect <HOST>:<PORT>   (see below)"
-          echo "   ADB TUNNEL   : $ADB_TUNNEL"
+          echo " 1. Install any VNC Viewer app on your phone"
+          echo "    (e.g. 'VNC Viewer' by RealVNC, from Play Store)"
           echo ""
-          echo " OPTION 2: Connect from phone BROWSER (no app needed)"
-          echo "   WEB SCREEN   : $WEB_TUNNEL"
+          echo " 2. Open the app, add a new connection using:"
+          echo "    $VNC_TUNNEL"
+          echo "    (strip the tcp:// prefix, just use host:port)"
+          echo ""
+          echo " 3. Connect - no password set by default."
+          echo "    You will see the real Android screen directly,"
+          echo "    with Play Store and Chrome ready to use."
           echo ""
           echo "============================================================"
-          echo " NOTE: ngrok free tier TCP address changes every run."
-          echo " Copy the ADB TUNNEL line exactly as shown above."
+          echo " NOTE: ngrok free tier address changes every run."
+          echo " NOTE: First boot may take a minute for GApps to settle."
           echo "============================================================"
 
-      - name: Keep Tunnel Active
+      - name: Keep Session Active
         run: |
           while true; do sleep 300; done
