@@ -66,10 +66,13 @@ jobs:
       - name: Start Web Screen Server (Browser Fallback)
         run: |
           docker run -d --name scrcpy-web \
+            --restart=always \
             -p 8000:8000 \
-            -e ADB_SERVER_SOCKET=tcp:localhost:5555 \
             --net=host \
-            ghcr.io/nova-land/ws-scrcpy:latest || true
+            yesir/wsscrcpy:latest
+
+          sleep 5
+          docker exec scrcpy-web adb connect 127.0.0.1:5555 || true
 
       - name: Start Ngrok TCP Tunnel For ADB (Phone Connect)
         run: |
