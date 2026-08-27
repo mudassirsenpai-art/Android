@@ -18,7 +18,16 @@ jobs:
       - name: Fast System Setup
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends adb curl tar openssl unzip xvfb x11vnc novnc websockify libpulse0 pulseaudio alsa-utils
+          sudo apt-get install -y --no-install-recommends \
+            adb curl tar openssl unzip \
+            xvfb x11vnc novnc websockify \
+            libpulse0 pulseaudio alsa-utils \
+            libgl1 libglu1-mesa \
+            libxkbcommon-x11-0 libxcb-cursor0 libxcb-xinerama0 \
+            libxcb-image0 libxcb-shape0 libxcb-render-util0 \
+            libxcb-icccm4 libxcb-keysyms1 \
+            libnss3 libxcomposite1 libxi6 libxtst6 \
+            imagemagick
 
       - name: Enable KVM access
         run: |
@@ -132,6 +141,20 @@ jobs:
           echo "Android System Ready!"
 
           adb shell settings put secure android_id ${{ env.GENERATED_ANDROID_ID }}
+
+      - name: Debug — Screenshot the Virtual Display
+        run: |
+          export DISPLAY=:1
+          sleep 5
+          import -display :1 -window root /tmp/xvfb-debug.png || echo "screenshot failed"
+
+      - name: Upload Debug Screenshot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xvfb-debug
+          path: /tmp/xvfb-debug.png
+          if-no-files-found: warn
 
       - name: Install Aurora Play Store (Guaranteed Fix)
         run: |
