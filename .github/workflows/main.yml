@@ -1,4 +1,4 @@
-name: Fast & Optimized Android Cloud
+name: Fast & Optimized Android Cloud (Fixed)
 
 on:
   push:
@@ -18,8 +18,18 @@ jobs:
       - name: Fast System Setup
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends adb curl tar openssl
-          sudo modprobe binder_linux devices="binder,hwbinder,vndbinder" || true
+          sudo apt-get install -y --no-install-recommends adb curl tar openssl unzip
+
+      # --- FIX 1: redroid needs a kernel binder module that GitHub-hosted
+      # runners simply do not ship (confirmed by the "binder_linux not found"
+      # error). Instead of redroid, use the real Android SDK emulator, which
+      # runs fine on ubuntu-latest because KVM is available there.
+      - name: Enable KVM access
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -al /dev/kvm
 
       - name: Generate Random Fresh Identity
         run: |
@@ -35,42 +45,55 @@ jobs:
           sudo mv ngrok /usr/local/bin/
           ngrok config add-authtoken ${{ secrets.NGROK_AUTHTOKEN }}
 
-      - name: Run Redroid Container (Low Latency Setup)
-        run: |
-          docker run -d --name redroid --privileged \
-            --pull always \
-            -p 5555:5555 \
-            redroid/redroid:11.0.0-latest \
-            androidboot.redroid_width=540 \
-            androidboot.redroid_height=960 \
-            androidboot.redroid_fps=30 \
-            androidboot.redroid_dpi=240 \
-            androidboot.hardware=redroid \
-            androidboot.redroid_gpu_mode=guest \
-            androidboot.redroid_imei=${{ env.GENERATED_IMEI }} \
-            androidboot.redroid_mac=${{ env.GENERATED_MAC }} \
-            androidboot.redroid_serialno=${{ env.GENERATED_SERIAL }}
+      - name: Setup Android SDK & Emulator
+        uses: android-actions/setup-android@v3
 
+      - name: Install Emulator + System Image
+        run: |
+          yes | sdkmanager --licenses > /dev/null || true
+          sdkmanager --install "platform-tools" "emulator" \
+            "system-images;android-30;google_apis;x86_64"
+          echo "no" | avdmanager create avd \
+            -n phone -k "system-images;android-30;google_apis;x86_64" \
+            --device "pixel_5" -f
+
+      - name: Boot Emulator (headless, KVM-accelerated)
+        run: |
+          nohup $ANDROID_HOME/emulator/emulator -avd phone \
+            -no-window -no-audio -no-boot-anim -accel on -gpu swiftshader_indirect \
+            > emulator.log 2>&1 &
+          echo "Emulator launched, waiting for adb device..."
+
+      # --- FIX 2: original loop had no timeout, so if boot never completes
+      # the job just burns the full 360 min. Now it fails fast with a clear
+      # error instead of silently hanging (this is what broke VNC/app-install).
       - name: Wait For Full System Boot & Inject Identity
         run: |
           adb kill-server
           adb start-server
-          adb connect 127.0.0.1:5555
-          adb -s 127.0.0.1:5555 wait-for-device
+          adb wait-for-device
 
           echo "Waiting for Android Package Manager service..."
-          while [ "$(adb -s 127.0.0.1:5555 shell getprop sys.boot_completed | tr -d '\r')" != "1" ]; do
-            sleep 2
+          timeout=300
+          elapsed=0
+          until [ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = "1" ]; do
+            sleep 5
+            elapsed=$((elapsed + 5))
+            if [ "$elapsed" -ge "$timeout" ]; then
+              echo "::error::Android did not finish booting within ${timeout}s"
+              cat emulator.log
+              exit 1
+            fi
           done
           echo "Android System Ready!"
 
-          adb -s 127.0.0.1:5555 shell settings put secure android_id ${{ env.GENERATED_ANDROID_ID }}
+          adb shell settings put secure android_id ${{ env.GENERATED_ANDROID_ID }}
 
       - name: Install Aurora Play Store (Guaranteed Fix)
         run: |
           mkdir -p /tmp/apks && cd /tmp/apks
           curl -sSL -o aurora.apk "https://files.aurorastore.org/AuroraStore/Release/AuroraStore-4.5.1.apk"
-          adb -s 127.0.0.1:5555 install -r -g aurora.apk || true
+          adb install -r -g aurora.apk
 
       - name: Run Ultra-Fast Scrcpy Web Server (Pre-built Image)
         run: |
@@ -93,18 +116,36 @@ jobs:
           sleep 3
           docker exec scrcpy-web adb connect 127.0.0.1:5555 || true
 
+      # --- FIX 3: ngrok's local API can take a moment to come up, and the
+      # original single curl could hit it before the tunnel existed, giving
+      # an empty WEB_TUNNEL. Now it retries until it actually gets a URL.
       - name: Start Ngrok & Show Summary Link
         run: |
           ngrok http 8000 --log=stdout > ngrok_web.log &
-          sleep 4
 
-          WEB_TUNNEL=$(curl -s http://localhost:4040/api/tunnels | python3 -c "
+          WEB_TUNNEL=""
+          for i in $(seq 1 15); do
+            WEB_TUNNEL=$(curl -s http://localhost:4040/api/tunnels | python3 -c "
           import json,sys
-          data = json.load(sys.stdin)
-          for t in data.get('tunnels', []):
-              if t.get('proto') == 'https':
-                  print(t.get('public_url'))
+          try:
+              data = json.load(sys.stdin)
+              for t in data.get('tunnels', []):
+                  if t.get('proto') == 'https':
+                      print(t.get('public_url'))
+          except Exception:
+              pass
           ")
+            if [ -n "$WEB_TUNNEL" ]; then
+              break
+            fi
+            sleep 2
+          done
+
+          if [ -z "$WEB_TUNNEL" ]; then
+            echo "::error::Ngrok tunnel URL never became available"
+            cat ngrok_web.log
+            exit 1
+          fi
 
           echo "# 🚀 FAST ONE-CLICK CONNECT LINK" >> $GITHUB_STEP_SUMMARY
           echo "## 👉 [$WEB_TUNNEL]($WEB_TUNNEL)" >> $GITHUB_STEP_SUMMARY
