@@ -98,7 +98,7 @@ jobs:
           adb -s 127.0.0.1:5555 shell appops set $PKG SYSTEM_ALERT_WINDOW allow || true
           adb -s 127.0.0.1:5555 shell pm grant $PKG android.permission.POST_NOTIFICATIONS || true
 
-          # Launch the app's main activity - the app can auto-start serving
+          # Launch the app's main activity first, so the app's process is alive
           adb -s 127.0.0.1:5555 shell am start -n $PKG/.MainActivity
           sleep 3
 
@@ -109,6 +109,42 @@ jobs:
           adb -s 127.0.0.1:5555 shell am startservice \
             -a $PKG.ACTION_START \
             $PKG/net.christianbeier.droidvnc_ng.MainService || true
+
+          sleep 2
+
+          # Android requires an on-screen tap to grant MediaProjection (screen capture) consent -
+          # this cannot be granted purely via adb shell permissions, so we auto-tap the system
+          # "Start now" / "Allow" button that appears on the projection consent dialog.
+          # Dump the UI, find the affirmative button, and tap its center coordinates.
+          adb -s 127.0.0.1:5555 shell uiautomator dump /sdcard/ui.xml || true
+          adb -s 127.0.0.1:5555 pull /sdcard/ui.xml /tmp/ui.xml || true
+
+          if [ -f /tmp/ui.xml ]; then
+            cat > /tmp/tap_consent.py << 'PYEOF'
+          import re, subprocess, sys
+
+          try:
+              with open('/tmp/ui.xml', 'r', encoding='utf-8', errors='ignore') as f:
+                  content = f.read()
+          except FileNotFoundError:
+              sys.exit(0)
+
+          # Look for buttons commonly used on the screen-capture consent dialog
+          keywords = ['Start now', 'start now', 'Allow', 'ALLOW', 'OK']
+          pattern = re.compile(r'<node[^>]*text="([^"]*)"[^>]*bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"')
+
+          for match in pattern.finditer(content):
+              text, x1, y1, x2, y2 = match.groups()
+              if any(k in text for k in keywords) and text.strip():
+                  cx = (int(x1) + int(x2)) // 2
+                  cy = (int(y1) + int(y2)) // 2
+                  print(f"Tapping '{text}' at ({cx},{cy})")
+                  subprocess.run(['adb', '-s', '127.0.0.1:5555', 'shell', 'input', 'tap', str(cx), str(cy)])
+                  break
+          PYEOF
+            python3 /tmp/tap_consent.py || true
+            sleep 2
+          fi
 
           adb -s 127.0.0.1:5555 forward tcp:5900 tcp:5900
 
