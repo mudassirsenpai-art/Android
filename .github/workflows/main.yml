@@ -165,7 +165,13 @@ jobs:
 
           cat > Dockerfile << 'DOCKEREOF'
           FROM node:18-bullseye-slim
-          RUN apt-get update && apt-get install -y android-tools-adb && rm -rf /var/lib/apt/lists/*
+          # python3/make/g++ are required by node-gyp to compile native
+          # modules (e.g. node-pty) pulled in by ws-scrcpy's dependencies.
+          # Without them, "npm ci" fails with "Could not find any Python
+          # installation to use".
+          RUN apt-get update && apt-get install -y --no-install-recommends \
+              android-tools-adb python3 make g++ \
+              && rm -rf /var/lib/apt/lists/*
           WORKDIR /app
           COPY package*.json ./
           RUN npm ci --only=production
@@ -176,7 +182,16 @@ jobs:
 
           docker build -t local/ws-scrcpy .
           docker run -d --name scrcpy-web --restart=always -p 8000:8000 --net=host local/ws-scrcpy
-          sleep 3
+
+          echo "Waiting for ws-scrcpy server to be ready..."
+          for i in $(seq 1 20); do
+            if curl -sf http://127.0.0.1:8000 > /dev/null; then
+              echo "ws-scrcpy is up."
+              break
+            fi
+            sleep 2
+          done
+
           docker exec scrcpy-web adb connect 127.0.0.1:5555 || true
 
       - name: Start Ngrok & Show Summary Link
