@@ -34,7 +34,7 @@ jobs:
         run: |
           ngrok config add-authtoken $NGROK_AUTHTOKEN
 
-      - name: Run Gaming-Optimized Android OS (Redroid ARM64 Support)
+      - name: Run Gaming-Optimized Android OS
         run: |
           docker run -d --name redroid --privileged \
             --pull always \
@@ -45,23 +45,22 @@ jobs:
             androidboot.redroid_fps=60 \
             androidboot.redroid_dpi=320 \
             androidboot.hardware=redroid \
-            androidboot.redroid_gpu_mode=guest \
-            androidboot.redroid_gpu_node=/dev/dri/renderD128
+            androidboot.redroid_gpu_mode=guest
 
       - name: Launch WebRTC Visual Touch Screen Server
         run: |
           docker run -d --name ws-scrcpy \
             --net=host \
             -e ADB_SERVER_SOCKET=tcp:localhost:5555 \
-            netbeast/ws-scrcpy || true
+            emptyhere/ws-scrcpy:latest || true
 
       - name: Connect ADB & Start Tunnel
         run: |
-          sleep 12
+          sleep 15
           adb connect 127.0.0.1:5555 || true
           
-          # Force Navigation Bar Visibility
-          adb shell settings put global policy_control null
+          # Specific device targeting fix for Navigation Bar
+          adb -s 127.0.0.1:5555 shell settings put global policy_control null
           
           ngrok http 8000 --log=stdout > ngrok.log &
           sleep 5
