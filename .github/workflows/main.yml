@@ -1,4 +1,4 @@
-name: RDP Supported Android Cloud OS
+name: Cloud Gaming Android Phone
 
 on:
   push:
@@ -7,69 +7,45 @@ on:
   workflow_dispatch:
 
 jobs:
-  run-android-rdp:
-    runs-on: ubuntu-latest
+  run-gaming-phone:
+    runs-on: windows-latest
     timeout-minutes: 360
 
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Install RDP & Desktop Environment
+      - name: Download & Setup Ngrok
         run: |
-          sudo apt-get update
-          sudo apt-get install -y xrdp lxde adb curl tar
-          sudo systemctl enable xrdp
-          echo "exec startlxde" > ~/.xsession
-          sudo service xrdp restart
-          
-          # Set Password for RDP User
-          echo "runneradmin:P@ssw0rd!" | sudo chpasswd
+          Invoke-WebRequest https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip -OutFile ngrok.zip
+          Expand-Archive ngrok.zip -DestinationPath .
+          .\ngrok.exe authtoken ${{ secrets.NGROK_AUTHTOKEN }}
 
-      - name: Setup Ngrok
+      - name: Start High-Performance Gaming Android Container
         run: |
-          curl -s https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz -o ngrok.tgz
-          tar -xvzf ngrok.tgz
-          sudo mv ngrok /usr/local/bin/
-
-      - name: Authenticate Ngrok
-        env:
-          NGROK_AUTHTOKEN: ${{ secrets.NGROK_AUTHTOKEN }}
-        run: |
-          ngrok config add-authtoken $NGROK_AUTHTOKEN
-
-      - name: Start Redroid Android OS
-        run: |
-          sudo modprobe binder_linux devices="binder,hwbinder,vndbinder" || true
-          docker run -d --name redroid --privileged \
-            --pull always \
+          docker run -d --name android-gaming-container \
+            -p 6080:6080 \
             -p 5555:5555 \
-            redroid/redroid:11.0.0-latest \
-            androidboot.redroid_width=720 \
-            androidboot.redroid_height=1280 \
-            androidboot.redroid_fps=60 \
-            androidboot.redroid_dpi=320 \
-            androidboot.hardware=redroid \
-            androidboot.redroid_gpu_mode=guest
+            --privileged \
+            -e EMULATOR_DEVICE="Samsung Galaxy S10" \
+            -e WEB_VNC=true \
+            budtmo/docker-android:emulator_11.0
 
-      - name: Start Ngrok RDP Tunnel & Print Info
+      - name: Start Ngrok Tunnel & Show Direct Screen Link
         run: |
-          sleep 10
-          # Expose RDP Port 3389
-          ngrok tcp 3389 --log=stdout > ngrok.log &
-          sleep 5
+          # Start ngrok tunnel for port 6080 (Web VNC Screen)
+          Start-Process -NoNewWindow -FilePath ".\ngrok.exe" -ArgumentList "http 6080"
+          Start-Sleep -Seconds 10
 
-          NGROK_TCP_URL=$(curl -s http://localhost:4040/api/tunnels | grep -o 'tcp://[^"]*' | head -n 1)
-          RDP_ADDRESS=$(echo $NGROK_TCP_URL | sed 's/tcp:\/\///')
+          $tunnelStatus = Invoke-RestMethod http://localhost:4040/api/tunnels
+          $ngrokUrl = $tunnelStatus.tunnels | Where-Object { $_.proto -eq "https" } | Select-Object -ExpandProperty public_url
 
-          echo "==============================================="
-          echo "       ANDROID RDP CONNECT DETAILS             "
-          echo "==============================================="
-          echo " RDP Address : $RDP_ADDRESS"
-          echo " Username    : runneradmin"
-          echo " Password    : P@ssw0rd!"
-          echo "==============================================="
+          Write-Host "============================================================"
+          Write-Host "         GAMING ANDROID PHONE IS READY!                     "
+          Write-Host "============================================================"
+          Write-Host " DIRECT PHONE SCREEN LINK : $ngrokUrl/vnc.html"
+          Write-Host "============================================================"
 
-      - name: Keep Alive
+      - name: Keep Tunnel Alive
         run: |
-          while true; do sleep 300; done
+          while ($true) { Start-Sleep -Seconds 300 }
