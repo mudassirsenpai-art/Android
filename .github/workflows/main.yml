@@ -1,4 +1,4 @@
-name: Cloud Gaming Android Phone
+name: Optimized Android Cloud Gaming Phone
 
 on:
   push:
@@ -7,38 +7,71 @@ on:
   workflow_dispatch:
 
 jobs:
-  run-gaming-phone:
-    runs-on: windows-latest
+  run-android-gaming:
+    runs-on: ubuntu-latest
     timeout-minutes: 360
 
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Download & Setup Ngrok
+      - name: Install Kernel Modules & ADB
         run: |
-          Invoke-WebRequest https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip -OutFile ngrok.zip
-          Expand-Archive ngrok.zip -DestinationPath .
-          .\ngrok.exe authtoken ${{ secrets.NGROK_AUTHTOKEN }}
+          sudo apt-get update
+          sudo apt-get install -y linux-modules-extra-$(uname -r) adb curl tar
+          sudo modprobe binder_linux devices="binder,hwbinder,vndbinder" || true
+          sudo modprobe ashmem_linux || true
 
-      - name: Start High-Performance Gaming Android Container
+      - name: Setup Ngrok
         run: |
-          docker run -d --name android-gaming-container -p 6080:6080 -p 5555:5555 --privileged -e EMULATOR_DEVICE="Samsung Galaxy S10" -e WEB_VNC=true budtmo/docker-android:emulator_11.0
+          curl -s https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz -o ngrok.tgz
+          tar -xvzf ngrok.tgz
+          sudo mv ngrok /usr/local/bin/
 
-      - name: Start Ngrok Tunnel & Show Direct Screen Link
+      - name: Authenticate Ngrok
+        env:
+          NGROK_AUTHTOKEN: ${{ secrets.NGROK_AUTHTOKEN }}
         run: |
-          Start-Process -NoNewWindow -FilePath ".\ngrok.exe" -ArgumentList "http 6080"
-          Start-Sleep -Seconds 12
+          ngrok config add-authtoken $NGROK_AUTHTOKEN
 
-          $tunnelStatus = Invoke-RestMethod http://localhost:4040/api/tunnels
-          $ngrokUrl = $tunnelStatus.tunnels | Where-Object { $_.proto -eq "https" } | Select-Object -ExpandProperty public_url
-
-          Write-Host "============================================================"
-          Write-Host "         GAMING ANDROID PHONE IS READY!                     "
-          Write-Host "============================================================"
-          Write-Host " DIRECT PHONE SCREEN LINK : $ngrokUrl/vnc.html"
-          Write-Host "============================================================"
-
-      - name: Keep Tunnel Alive
+      - name: Run Gaming-Optimized Android OS
         run: |
-          while ($true) { Start-Sleep -Seconds 300 }
+          docker run -d --name redroid --privileged \
+            --pull always \
+            -p 5555:5555 \
+            redroid/redroid:11.0.0-latest \
+            androidboot.redroid_width=720 \
+            androidboot.redroid_height=1280 \
+            androidboot.redroid_fps=60 \
+            androidboot.redroid_dpi=320 \
+            androidboot.hardware=redroid \
+            androidboot.redroid_gpu_mode=guest
+
+      - name: Launch Phone Web Screen Container
+        run: |
+          docker run -d --name android-web \
+            -p 6080:6080 \
+            --net=host \
+            -e ADB_SERVER_SOCKET=tcp:localhost:5555 \
+            budtmo/docker-android:emulator_11.0 || true
+
+      - name: Start Ngrok Web Tunnel & Print Link
+        run: |
+          sleep 12
+          adb connect 127.0.0.1:5555 || true
+
+          # Start Web HTTP Tunnel on Port 6080
+          ngrok http 6080 --log=stdout > ngrok.log &
+          sleep 5
+
+          NGROK_WEB_URL=$(curl -s http://localhost:4040/api/tunnels | grep -o 'https://[^"]*' | head -n 1)
+
+          echo "============================================================"
+          echo "       GAMING ANDROID OS IS READY FOR MOBILE BROWSER        "
+          echo "============================================================"
+          echo " DIRECT SCREEN URL : $NGROK_WEB_URL/vnc.html"
+          echo "============================================================"
+
+      - name: Keep Tunnel Active
+        run: |
+          while true; do sleep 300; done
