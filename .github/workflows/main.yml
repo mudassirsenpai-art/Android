@@ -78,39 +78,52 @@ jobs:
           adb -s 127.0.0.1:5555 shell getprop ro.build.version.release || true
           echo "ADB connection to redroid (GApps) confirmed."
 
-      - name: Download & Install droidVNC-NG
-        run: |
-          wget -q "https://github.com/bk138/droidVNC-NG/releases/download/v2.20.3/droidVNC-NG-2.20.3-arm64-v8a.apk" -O droidvncng-arm64.apk || true
-          wget -q "https://github.com/bk138/droidVNC-NG/releases/download/v2.20.3/droidVNC-NG-2.20.3-x86_64.apk" -O droidvncng.apk
-
-          adb -s 127.0.0.1:5555 install -r droidvncng.apk
-
-          echo "droidVNC-NG installed."
-
-      - name: Grant Permissions & Start VNC Server
+      - name: Download, Install & Start droidVNC-NG
         run: |
           PKG="net.christianbeier.droidvnc_ng"
+
+          # Ask GitHub's API for the real asset URLs instead of guessing filenames
+          ASSET_URL=$(curl -s https://api.github.com/repos/bk138/droidVNC-NG/releases/latest \
+            | python3 -c "
+          import json,sys
+          data = json.load(sys.stdin)
+          for a in data.get('assets', []):
+              name = a.get('name', '')
+              if name.endswith('.apk') and ('x86_64' in name or 'universal' in name):
+                  print(a['browser_download_url'])
+                  break
+          ")
+
+          if [ -z "$ASSET_URL" ]; then
+            # fall back to first apk asset if no x86_64/universal build exists
+            ASSET_URL=$(curl -s https://api.github.com/repos/bk138/droidVNC-NG/releases/latest \
+              | python3 -c "
+          import json,sys
+          data = json.load(sys.stdin)
+          for a in data.get('assets', []):
+              if a.get('name','').endswith('.apk'):
+                  print(a['browser_download_url'])
+                  break
+          ")
+          fi
+
+          echo "Downloading: $ASSET_URL"
+          wget -q "$ASSET_URL" -O droidvncng.apk
+          adb -s 127.0.0.1:5555 install -r droidvncng.apk
 
           # Grant required permissions so it can run headless without manual taps
           adb -s 127.0.0.1:5555 shell appops set $PKG SYSTEM_ALERT_WINDOW allow || true
           adb -s 127.0.0.1:5555 shell pm grant $PKG android.permission.POST_NOTIFICATIONS || true
 
-          # Start the VNC server as a foreground service, no port password for simplicity
-          # (You can add -e PORT and -e PASSWORD extras if you want a password-protected server)
-          adb -s 127.0.0.1:5555 shell am start-foreground-service \
-            -n $PKG/.Server \
-            -a $PKG.ACTION_START
-
-          sleep 5
+          # Start the VNC server as a foreground service (no password by default)
+          adb -s 127.0.0.1:5555 shell am start-foreground-service -n $PKG/.Server -a $PKG.ACTION_START
+          sleep 3
           adb -s 127.0.0.1:5555 shell am start -n $PKG/.MainActivity || true
 
-          echo "VNC server should now be running on port 5900 inside the container."
-
-      - name: Expose VNC Port From Container To Host
-        run: |
-          # redroid does not natively expose the VNC port, so we forward it via adb
+          # Forward VNC port from container to host
           adb -s 127.0.0.1:5555 forward tcp:5900 tcp:5900
-          echo "VNC port 5900 forwarded from container to host."
+
+          echo "droidVNC-NG installed, running, and port 5900 forwarded."
 
       - name: Start Ngrok Tunnel For VNC (Real VNC Client, No ADB Needed On Phone)
         run: |
