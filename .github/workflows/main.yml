@@ -47,32 +47,75 @@ jobs:
             androidboot.hardware=redroid \
             androidboot.redroid_gpu_mode=guest
 
-      - name: Start Web Screen Server
+      - name: Wait For Redroid To Boot
+        run: |
+          echo "Waiting for redroid container to fully boot..."
+          sleep 20
+          docker logs redroid --tail 50 || true
+
+      - name: Connect ADB (Local Sanity Check)
+        run: |
+          adb kill-server
+          adb start-server
+          adb connect 127.0.0.1:5555
+          adb -s 127.0.0.1:5555 wait-for-device
+          adb -s 127.0.0.1:5555 shell settings put global policy_control null
+          adb -s 127.0.0.1:5555 shell getprop ro.build.version.release || true
+          echo "Local ADB connection to redroid confirmed."
+
+      - name: Start Web Screen Server (Browser Fallback)
         run: |
           docker run -d --name scrcpy-web \
             -p 8000:8000 \
             -e ADB_SERVER_SOCKET=tcp:localhost:5555 \
             --net=host \
-            emptyhere/ws-scrcpy:latest || true
+            ghcr.io/nova-land/ws-scrcpy:latest || true
 
-      - name: Connect ADB & Start Ngrok Tunnel
+      - name: Start Ngrok TCP Tunnel For ADB (Phone Connect)
         run: |
-          sleep 15
-          adb connect 127.0.0.1:5555 || true
-          
-          # Force Navigation Bar to show
-          adb shell settings put global policy_control null
-
-          # Tunnel Port 8000 (Web Interface)
-          ngrok http 8000 --log=stdout > ngrok.log &
+          # This exposes port 5555 (ADB) over a public TCP address,
+          # so you can adb connect from YOUR OWN PHONE (via Termux/ADB app)
+          ngrok tcp 5555 --log=stdout > ngrok_adb.log &
           sleep 5
 
-          NGROK_WEB_URL=$(curl -s http://localhost:4040/api/tunnels | grep -o 'https://[^"]*' | head -n 1)
+      - name: Start Ngrok HTTP Tunnel For Web Screen
+        run: |
+          ngrok http 8000 --log=stdout > ngrok_web.log &
+          sleep 5
+
+      - name: Print Connection Info
+        run: |
+          ADB_TUNNEL=$(curl -s http://localhost:4040/api/tunnels | python3 -c "
+          import json,sys
+          data = json.load(sys.stdin)
+          for t in data.get('tunnels', []):
+              if t.get('proto') == 'tcp':
+                  print(t.get('public_url'))
+          ")
+
+          WEB_TUNNEL=$(curl -s http://localhost:4040/api/tunnels | python3 -c "
+          import json,sys
+          data = json.load(sys.stdin)
+          for t in data.get('tunnels', []):
+              if t.get('proto') == 'https':
+                  print(t.get('public_url'))
+          ")
 
           echo "============================================================"
-          echo "       GAMING ANDROID OS IS READY FOR MOBILE BROWSER        "
+          echo "        GAMING ANDROID CLOUD - READY TO CONNECT              "
           echo "============================================================"
-          echo " DIRECT SCREEN URL : $NGROK_WEB_URL"
+          echo ""
+          echo " OPTION 1: Connect from YOUR OWN PHONE (ADB)"
+          echo "   1. Install 'Termux' or any ADB client app on your phone"
+          echo "   2. Run: adb connect <HOST>:<PORT>   (see below)"
+          echo "   ADB TUNNEL   : $ADB_TUNNEL"
+          echo ""
+          echo " OPTION 2: Connect from phone BROWSER (no app needed)"
+          echo "   WEB SCREEN   : $WEB_TUNNEL"
+          echo ""
+          echo "============================================================"
+          echo " NOTE: ngrok free tier TCP address changes every run."
+          echo " Copy the ADB TUNNEL line exactly as shown above."
           echo "============================================================"
 
       - name: Keep Tunnel Active
