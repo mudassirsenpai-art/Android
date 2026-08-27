@@ -63,13 +63,35 @@ jobs:
           adb -s 127.0.0.1:5555 shell getprop ro.build.version.release || true
           echo "Local ADB connection to redroid confirmed."
 
-      - name: Start Web Screen Server (Browser Fallback)
+      - name: Build & Start Web Screen Server (Browser Fallback)
         run: |
+          git clone https://github.com/NetrisTV/ws-scrcpy.git /tmp/ws-scrcpy
+          cd /tmp/ws-scrcpy
+
+          cat > Dockerfile << 'DOCKEREOF'
+          FROM node:18-alpine AS builder
+          RUN apk add --no-cache python3 make g++
+          WORKDIR /app
+          COPY . .
+          RUN npm install
+          RUN npm run dist
+
+          FROM node:18-alpine
+          RUN apk add --no-cache android-tools
+          WORKDIR /app
+          COPY --from=builder /app/dist /app
+          RUN npm install
+          EXPOSE 8000
+          CMD ["npm", "start"]
+          DOCKEREOF
+
+          docker build -t local/ws-scrcpy .
+
           docker run -d --name scrcpy-web \
             --restart=always \
             -p 8000:8000 \
             --net=host \
-            yesir/wsscrcpy:latest
+            local/ws-scrcpy
 
           sleep 5
           docker exec scrcpy-web adb connect 127.0.0.1:5555 || true
