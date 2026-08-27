@@ -50,12 +50,24 @@ jobs:
 
       - name: Install Emulator + System Image
         run: |
+          echo "ANDROID_AVD_HOME=$HOME/.android/avd" >> $GITHUB_ENV
+          mkdir -p "$HOME/.android/avd"
+
           yes | sdkmanager --licenses > /dev/null || true
           sdkmanager --install "platform-tools" "emulator" \
             "system-images;android-30;google_apis;x86_64"
+
           echo "no" | avdmanager create avd \
             -n phone -k "system-images;android-30;google_apis;x86_64" \
-            --device "pixel_5" -f
+            --device "pixel_5" --path "$HOME/.android/avd/phone.avd" -f
+
+          echo "--- Verifying AVD was actually created ---"
+          avdmanager list avd
+          if [ ! -f "$HOME/.android/avd/phone.avd/config.ini" ]; then
+            echo "::error::AVD phone.avd was not created — see avdmanager output above"
+            exit 1
+          fi
+          echo "AVD confirmed at $HOME/.android/avd/phone.avd"
 
       - name: Boot Emulator (headless, KVM-accelerated)
         run: |
