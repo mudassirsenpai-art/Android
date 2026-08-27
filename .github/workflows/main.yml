@@ -34,7 +34,7 @@ jobs:
         run: |
           ngrok config add-authtoken $NGROK_AUTHTOKEN
 
-      - name: Run Gaming-Optimized Android OS
+      - name: Run Gaming-Optimized Redroid Container
         run: |
           docker run -d --name redroid --privileged \
             --pull always \
@@ -47,21 +47,24 @@ jobs:
             androidboot.hardware=redroid \
             androidboot.redroid_gpu_mode=guest
 
-      - name: Launch Phone Web Screen Container
+      - name: Start Web Screen Server
         run: |
-          docker run -d --name android-web \
-            -p 6080:6080 \
-            --net=host \
+          docker run -d --name scrcpy-web \
+            -p 8000:8000 \
             -e ADB_SERVER_SOCKET=tcp:localhost:5555 \
-            budtmo/docker-android:emulator_11.0 || true
+            --net=host \
+            emptyhere/ws-scrcpy:latest || true
 
-      - name: Start Ngrok Web Tunnel & Print Link
+      - name: Connect ADB & Start Ngrok Tunnel
         run: |
-          sleep 12
+          sleep 15
           adb connect 127.0.0.1:5555 || true
+          
+          # Force Navigation Bar to show
+          adb shell settings put global policy_control null
 
-          # Start Web HTTP Tunnel on Port 6080
-          ngrok http 6080 --log=stdout > ngrok.log &
+          # Tunnel Port 8000 (Web Interface)
+          ngrok http 8000 --log=stdout > ngrok.log &
           sleep 5
 
           NGROK_WEB_URL=$(curl -s http://localhost:4040/api/tunnels | grep -o 'https://[^"]*' | head -n 1)
@@ -69,7 +72,7 @@ jobs:
           echo "============================================================"
           echo "       GAMING ANDROID OS IS READY FOR MOBILE BROWSER        "
           echo "============================================================"
-          echo " DIRECT SCREEN URL : $NGROK_WEB_URL/vnc.html"
+          echo " DIRECT SCREEN URL : $NGROK_WEB_URL"
           echo "============================================================"
 
       - name: Keep Tunnel Active
