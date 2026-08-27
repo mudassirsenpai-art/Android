@@ -69,15 +69,15 @@ jobs:
           cd /tmp/ws-scrcpy
 
           cat > Dockerfile << 'DOCKEREOF'
-          FROM node:18-alpine AS builder
-          RUN apk add --no-cache python3 make g++
+          FROM node:18-bullseye-slim AS builder
+          RUN apt-get update && apt-get install -y python3 make g++ && rm -rf /var/lib/apt/lists/*
           WORKDIR /app
           COPY . .
           RUN npm install
           RUN npm run dist
 
-          FROM node:18-alpine
-          RUN apk add --no-cache android-tools
+          FROM node:18-bullseye-slim
+          RUN apt-get update && apt-get install -y python3 make g++ android-tools-adb && rm -rf /var/lib/apt/lists/*
           WORKDIR /app
           COPY --from=builder /app/dist /app
           RUN npm install
