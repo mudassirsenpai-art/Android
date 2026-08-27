@@ -1,4 +1,4 @@
-name: Optimized Android Cloud Phone
+name: Optimized Android Cloud Phone (VNC)
 
 on:
   push:
@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  run-android-gaming:
+  run-android-vnc:
     runs-on: ubuntu-latest
     timeout-minutes: 360
 
@@ -15,10 +15,11 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Install Kernel Modules & ADB
+      - name: Fix DNS & Install Dependencies
         run: |
+          sudo sh -c 'echo "nameserver 8.8.8.8" > /etc/resolv.conf'
           sudo apt-get update
-          sudo apt-get install -y linux-modules-extra-$(uname -r) adb curl tar openssl
+          sudo apt-get install -y linux-modules-extra-$(uname -r) adb curl tar openssl xvfb x11vnc scrcpy websockify git
           sudo modprobe binder_linux devices="binder,hwbinder,vndbinder" || true
           sudo modprobe ashmem_linux || true
 
@@ -46,7 +47,7 @@ jobs:
         run: |
           ngrok config add-authtoken $NGROK_AUTHTOKEN
 
-      - name: Run Gaming & Smooth Optimized Redroid
+      - name: Run Smooth Optimized Redroid
         run: |
           docker run -d --name redroid --privileged \
             --pull always \
@@ -70,56 +71,41 @@ jobs:
           adb start-server
           adb connect 127.0.0.1:5555
           adb -s 127.0.0.1:5555 wait-for-device
-
-          # Inject randomized Android ID into system settings
           adb -s 127.0.0.1:5555 shell settings put secure android_id ${{ env.GENERATED_ANDROID_ID }}
 
-      - name: Download and Install Play Store & Browsers
+      - name: Download and Install Play Store (Aurora Store) & Browser
         run: |
           mkdir -p /tmp/apks
           cd /tmp/apks
 
-          # Download Play Store Client (Aurora Store) safely
-          curl -sSL -o aurorastore.apk "https://files.aurorastore.org/AuroraStore/Release/AuroraStore-4.5.1.apk" || true
+          echo "Downloading Aurora Store..."
+          curl -sL -o aurorastore.apk "https://github.com/AuroraOSS/AuroraStore/releases/download/4.3.5/AuroraStore-4.3.5-Stable.release.apk" || true
 
           if [ -f aurorastore.apk ]; then
             adb -s 127.0.0.1:5555 install -r aurorastore.apk || true
+            echo "Aurora Store installed successfully!"
           fi
 
-      - name: Build & Start Fast Web Screen Server
+      - name: Setup VNC & noVNC Browser Stream
         run: |
-          git clone https://github.com/NetrisTV/ws-scrcpy.git /tmp/ws-scrcpy
-          cd /tmp/ws-scrcpy
-
-          cat > Dockerfile << 'DOCKEREOF'
-          FROM node:18-bullseye-slim AS builder
-          RUN apt-get update && apt-get install -y python3 make g++ && rm -rf /var/lib/apt/lists/*
-          WORKDIR /app
-          COPY . .
-          RUN npm install
-          RUN npm run dist
-
-          FROM node:18-bullseye-slim
-          RUN apt-get update && apt-get install -y python3 make g++ android-tools-adb && rm -rf /var/lib/apt/lists/*
-          WORKDIR /app
-          COPY --from=builder /app/dist /app
-          RUN npm install
-          EXPOSE 8000
-          CMD ["npm", "start"]
-          DOCKEREOF
-
-          docker build -t local/ws-scrcpy .
-
-          docker run -d --name scrcpy-web \
-            --restart=always \
-            -p 8000:8000 \
-            --net=host \
-            local/ws-scrcpy
-
+          git clone https://github.com/novnc/noVNC.git /opt/novnc
+          
+          # Start Virtual Framebuffer
+          Xvfb :99 -screen 0 540x960x24 &
+          export DISPLAY=:99
+          
+          # Run scrcpy optimized for slow networks
+          scrcpy -s 127.0.0.1:5555 --max-size 540 --bit-rate 800k --max-fps 20 &
+          
+          # Start VNC server
+          x11vnc -display :99 -forever -shared -nopw -noxdamage &
+          
+          # Start WebSockets proxy for browser (noVNC on port 8000)
+          /opt/novnc/utils/novnc_proxy --vnc localhost:5900 --listen 8000 &
+          
           sleep 5
-          docker exec scrcpy-web adb connect 127.0.0.1:5555 || true
 
-      - name: Start Ngrok HTTP Tunnel For Web Screen
+      - name: Start Ngrok HTTP Tunnel For VNC Stream
         run: |
           ngrok http 8000 --log=stdout > ngrok_web.log &
           sleep 5
@@ -134,8 +120,8 @@ jobs:
                   print(t.get('public_url'))
           ")
 
-          echo "# 🚀 ONE-CLICK CONNECT LINK" >> $GITHUB_STEP_SUMMARY
-          echo "## 👉 [$WEB_TUNNEL]($WEB_TUNNEL)" >> $GITHUB_STEP_SUMMARY
+          echo "# 🚀 ONE-CLICK VNC CONNECT LINK" >> $GITHUB_STEP_SUMMARY
+          echo "## 👉 [$WEB_TUNNEL/vnc.html?autoconnect=true&resize=scale]($WEB_TUNNEL/vnc.html?autoconnect=true&resize=scale)" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "---" >> $GITHUB_STEP_SUMMARY
           echo "### 🆔 Fresh Identity Applied:" >> $GITHUB_STEP_SUMMARY
