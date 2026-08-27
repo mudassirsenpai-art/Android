@@ -68,16 +68,25 @@ jobs:
 
           adb -s 127.0.0.1:5555 shell settings put global policy_control null
 
+          echo "===== Waiting extra time for the display surface to fully initialize ====="
+          # Starting vncserver before the graphics surface is ready causes a black screen
+          # that then drops the client. Give the compositor more time, and nudge the
+          # screen awake so a real frame gets composited before we attach the VNC server.
+          adb -s 127.0.0.1:5555 shell input keyevent KEYCODE_WAKEUP || true
+          adb -s 127.0.0.1:5555 shell wm size || true
+          sleep 10
+
           echo "===== Manually starting the vncserver binary (it exists but doesn't auto-start) ====="
           # The image ships /vendor/bin/vncserver but its init.rc trigger doesn't fire automatically,
           # so we launch it directly as a background process inside the container.
           docker exec -d redroid /vendor/bin/vncserver -rfbport 5900
 
-          sleep 3
+          sleep 5
 
           echo "===== Verifying VNC server is now listening on 5900 ====="
           docker exec redroid sh -c "netstat -tlnp 2>/dev/null | grep 5900 || ss -tlnp 2>/dev/null | grep 5900 || echo 'STILL NOTHING LISTENING'"
           docker exec redroid sh -c "ps -ef | grep -i vnc || echo 'no vnc process running'"
+          docker logs redroid --tail 30 || true
 
       - name: Start Ngrok Tunnel & Print Connection Info
         run: |
