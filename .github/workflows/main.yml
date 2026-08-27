@@ -30,9 +30,9 @@ jobs:
 
       - name: Authenticate Ngrok
         env:
-          NGROK_AUTH_TOKEN: ${{ secrets.NGROK_AUTH_TOKEN }}
+          NGROK_AUTHTOKEN: ${{ secrets.NGROK_AUTHTOKEN }}
         run: |
-          ngrok config add-authtoken $NGROK_AUTH_TOKEN
+          ngrok config add-authtoken $NGROK_AUTHTOKEN
 
       - name: Run Gaming-Optimized Android OS (Redroid ARM64 Support)
         run: |
