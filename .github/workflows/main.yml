@@ -18,7 +18,7 @@ jobs:
       - name: Install Kernel Modules & ADB
         run: |
           sudo apt-get update
-          sudo apt-get install -y linux-modules-extra-$(uname -r) adb curl tar jq
+          sudo apt-get install -y linux-modules-extra-$(uname -r) adb curl tar
           sudo modprobe binder_linux devices="binder,hwbinder,vndbinder" || true
           sudo modprobe ashmem_linux || true
 
@@ -32,21 +32,20 @@ jobs:
         env:
           NGROK_AUTHTOKEN: ${{ secrets.NGROK_AUTHTOKEN }}
         run: |
-          ngrok config add-authtoken "$NGROK_AUTHTOKEN"
+          ngrok config add-authtoken $NGROK_AUTHTOKEN
 
-      - name: Run Gaming-Optimized Redroid Container (with GApps)
+      - name: Run Gaming-Optimized Redroid Container
         run: |
           docker run -d --name redroid --privileged \
             --pull always \
             -p 5555:5555 \
-            cakriwut/redroid:11.0.0_gapps_magisk \
+            redroid/redroid:11.0.0-latest \
             androidboot.redroid_width=720 \
             androidboot.redroid_height=1280 \
             androidboot.redroid_fps=60 \
             androidboot.redroid_dpi=320 \
             androidboot.hardware=redroid \
-            androidboot.redroid_gpu_mode=guest \
-            ro.setupwizard.mode=DISABLED
+            androidboot.redroid_gpu_mode=guest
 
       - name: Wait For Redroid To Boot
         run: |
@@ -54,83 +53,94 @@ jobs:
           sleep 20
           docker logs redroid --tail 50 || true
 
-      - name: Connect ADB
+      - name: Connect ADB (Local Sanity Check)
         run: |
           adb kill-server
           adb start-server
           adb connect 127.0.0.1:5555
           adb -s 127.0.0.1:5555 wait-for-device
           adb -s 127.0.0.1:5555 shell settings put global policy_control null
-          echo "ADB connected to redroid."
+          adb -s 127.0.0.1:5555 shell getprop ro.build.version.release || true
+          echo "Local ADB connection to redroid confirmed."
 
-      - name: Install & Start droidVNC-NG (headless remote desktop)
+      - name: Build & Start Web Screen Server (Browser Fallback)
         run: |
-          LATEST_APK_URL=$(curl -s https://api.github.com/repos/bk138/droidVNC-NG/releases/latest \
-            | jq -r '.assets[] | select(.name | endswith(".apk")) | .browser_download_url')
+          git clone https://github.com/NetrisTV/ws-scrcpy.git /tmp/ws-scrcpy
+          cd /tmp/ws-scrcpy
 
-          curl -sL -o droidvncng.apk "$LATEST_APK_URL"
-          adb -s 127.0.0.1:5555 install -r droidvncng.apk
+          cat > Dockerfile << 'DOCKEREOF'
+          FROM node:18-bullseye-slim AS builder
+          RUN apt-get update && apt-get install -y python3 make g++ && rm -rf /var/lib/apt/lists/*
+          WORKDIR /app
+          COPY . .
+          RUN npm install
+          RUN npm run dist
 
-          # Grant permission to capture screen without a popup every boot
-          adb -s 127.0.0.1:5555 shell cmd appops set net.christianbeier.droidvnc_ng PROJECT_MEDIA allow
+          FROM node:18-bullseye-slim
+          RUN apt-get update && apt-get install -y python3 make g++ android-tools-adb && rm -rf /var/lib/apt/lists/*
+          WORKDIR /app
+          COPY --from=builder /app/dist /app
+          RUN npm install
+          EXPOSE 8000
+          CMD ["npm", "start"]
+          DOCKEREOF
 
-          # Enable input/touch injection accessibility service
-          CURRENT_SERVICES=$(adb -s 127.0.0.1:5555 shell settings get secure enabled_accessibility_services)
-          adb -s 127.0.0.1:5555 shell settings put secure enabled_accessibility_services \
-            "net.christianbeier.droidvnc_ng/.InputService:${CURRENT_SERVICES}"
+          docker build -t local/ws-scrcpy .
 
-          # Start the VNC server on port 5901
-          adb -s 127.0.0.1:5555 shell am start-foreground-service \
-            -n net.christianbeier.droidvnc_ng/.MainService \
-            -a net.christianbeier.droidvnc_ng.ACTION_START \
-            --ei net.christianbeier.droidvnc_ng.EXTRA_PORT 5901
+          docker run -d --name scrcpy-web \
+            --restart=always \
+            -p 8000:8000 \
+            --net=host \
+            local/ws-scrcpy
 
           sleep 5
-          echo "VNC server started on port 5901 inside redroid."
+          docker exec scrcpy-web adb connect 127.0.0.1:5555 || true
 
-      - name: Start Ngrok Tunnels (ADB + VNC)
+      - name: Start Ngrok TCP Tunnel For ADB (Phone Connect)
         run: |
+          # This exposes port 5555 (ADB) over a public TCP address,
+          # so you can adb connect from YOUR OWN PHONE (via Termux/ADB app)
           ngrok tcp 5555 --log=stdout > ngrok_adb.log &
-          ngrok tcp 5901 --log=stdout > ngrok_vnc.log &
+          sleep 5
 
-          echo "Waiting for ngrok tunnels to come online..."
-          for i in $(seq 1 15); do
-            TUNNEL_COUNT=$(curl -s http://localhost:4040/api/tunnels | jq '.tunnels | length' 2>/dev/null || echo 0)
-            if [ "$TUNNEL_COUNT" -ge "2" ]; then
-              echo "Both tunnels are up."
-              break
-            fi
-            echo "Tunnels not ready yet ($TUNNEL_COUNT/2), retrying..."
-            sleep 3
-          done
+      - name: Start Ngrok HTTP Tunnel For Web Screen
+        run: |
+          ngrok http 8000 --log=stdout > ngrok_web.log &
+          sleep 5
 
       - name: Print Connection Info
         run: |
+          ADB_TUNNEL=$(curl -s http://localhost:4040/api/tunnels | python3 -c "
+          import json,sys
+          data = json.load(sys.stdin)
+          for t in data.get('tunnels', []):
+              if t.get('proto') == 'tcp':
+                  print(t.get('public_url'))
+          ")
+
+          WEB_TUNNEL=$(curl -s http://localhost:4040/api/tunnels | python3 -c "
+          import json,sys
+          data = json.load(sys.stdin)
+          for t in data.get('tunnels', []):
+              if t.get('proto') == 'https':
+                  print(t.get('public_url'))
+          ")
+
           echo "============================================================"
           echo "        GAMING ANDROID CLOUD - READY TO CONNECT              "
           echo "============================================================"
           echo ""
-          curl -s http://localhost:4040/api/tunnels | jq -r '.tunnels[] | "\(.config.addr) -> \(.public_url)"' | while read -r line; do
-            case "$line" in
-              *:5555*)
-                echo "ADB TUNNEL (PC/laptop, scrcpy):   ${line##*-> }"
-                ;;
-              *:5901*)
-                echo "VNC TUNNEL (Phone, RDP-style):    ${line##*-> }"
-                ;;
-            esac
-          done
+          echo " OPTION 1: Connect from YOUR OWN PHONE (ADB)"
+          echo "   1. Install 'Termux' or any ADB client app on your phone"
+          echo "   2. Run: adb connect <HOST>:<PORT>   (see below)"
+          echo "   ADB TUNNEL   : $ADB_TUNNEL"
           echo ""
-          echo "OPTION 1 (Phone, RDP-style, no PC needed):"
-          echo "  1. Install any VNC Viewer app from Play Store (e.g. 'VNC Viewer' by RealVNC)"
-          echo "  2. Paste the VNC TUNNEL address above (strip tcp:// prefix, keep host:port)"
-          echo "  3. Connect - full touch control, native window, no browser"
+          echo " OPTION 2: Connect from phone BROWSER (no app needed)"
+          echo "   WEB SCREEN   : $WEB_TUNNEL"
           echo ""
-          echo "OPTION 2 (PC/laptop, best quality):"
-          echo "  adb connect <ADB TUNNEL host:port>"
-          echo "  scrcpy -s <host>:<port> --max-fps=60 --video-bit-rate=8M"
           echo "============================================================"
-          echo "NOTE: ngrok free tier addresses change every run - always copy fresh."
+          echo " NOTE: ngrok free tier TCP address changes every run."
+          echo " Copy the ADB TUNNEL line exactly as shown above."
           echo "============================================================"
 
       - name: Keep Tunnel Active
