@@ -71,7 +71,24 @@ jobs:
         run: |
           adb kill-server
           adb start-server
-          adb wait-for-device
+
+          echo "Waiting for emulator to register with adb..."
+          timeout 90 adb wait-for-device || {
+            echo "::error::adb never saw the emulator device (it likely crashed on launch)"
+            echo "--- emulator.log ---"
+            cat emulator.log
+            echo "--- adb devices ---"
+            adb devices -l
+            exit 1
+          }
+
+          echo "adb sees the device. Checking process is actually alive..."
+          adb devices -l
+          if ! pgrep -f "emulator64-x86_64|qemu-system" > /dev/null; then
+            echo "::error::Emulator process is not running anymore"
+            cat emulator.log
+            exit 1
+          fi
 
           echo "Waiting for Android Package Manager service..."
           timeout=300
