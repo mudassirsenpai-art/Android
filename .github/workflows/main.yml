@@ -18,7 +18,7 @@ jobs:
       - name: Fast System Setup
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends adb curl tar openssl unzip
+          sudo apt-get install -y --no-install-recommends adb curl tar openssl unzip ffmpeg scrcpy
 
       - name: Enable KVM access
         run: |
@@ -158,41 +158,37 @@ jobs:
           echo "Downloaded from $DOWNLOADED"
           adb install -r -g aurora.apk
 
-      - name: Run Ultra-Fast Scrcpy Web Server (Pre-built Image)
+      # Replaces the old ws-scrcpy Docker/npm pipeline. That path required
+      # cloning a repo, building a Docker image, and running "npm ci", which
+      # kept breaking (missing Python for node-gyp, then a postinstall
+      # script referencing a file not yet present in the build context).
+      # This approach needs nothing but scrcpy + ffmpeg (already installed
+      # in "Fast System Setup") and pipes scrcpy's raw H.264 output directly
+      # into ffmpeg's own built-in HTTP MJPEG server. It has fewer moving
+      # parts, nothing to compile, and lower latency than a websocket-based
+      # web client, which helps on a high-ping connection.
+      - name: Stream Android Screen (scrcpy -> ffmpeg MJPEG)
         run: |
-          git clone https://github.com/NetrisTV/ws-scrcpy.git /tmp/ws-scrcpy
-          cd /tmp/ws-scrcpy
+          nohup bash -c '
+            scrcpy --no-window --no-audio --record=- --record-format=mkv --max-fps=30 --video-bit-rate=4M 2>scrcpy.log | \
+            ffmpeg -i - -f mjpeg -q:v 5 -r 15 -listen 1 http://0.0.0.0:8000/stream.mjpg
+          ' > stream.log 2>&1 &
 
-          cat > Dockerfile << 'DOCKEREOF'
-          FROM node:18-bullseye-slim
-          # python3/make/g++ are required by node-gyp to compile native
-          # modules (e.g. node-pty) pulled in by ws-scrcpy's dependencies.
-          # Without them, "npm ci" fails with "Could not find any Python
-          # installation to use".
-          RUN apt-get update && apt-get install -y --no-install-recommends \
-              android-tools-adb python3 make g++ \
-              && rm -rf /var/lib/apt/lists/*
-          WORKDIR /app
-          COPY package*.json ./
-          RUN npm ci --only=production
-          COPY . .
-          EXPOSE 8000
-          CMD ["npm", "start"]
-          DOCKEREOF
-
-          docker build -t local/ws-scrcpy .
-          docker run -d --name scrcpy-web --restart=always -p 8000:8000 --net=host local/ws-scrcpy
-
-          echo "Waiting for ws-scrcpy server to be ready..."
-          for i in $(seq 1 20); do
-            if curl -sf http://127.0.0.1:8000 > /dev/null; then
-              echo "ws-scrcpy is up."
+          echo "Waiting for MJPEG stream to come up..."
+          for i in $(seq 1 30); do
+            if curl -sf -o /dev/null http://127.0.0.1:8000/stream.mjpg --max-time 2; then
+              echo "Stream is up."
               break
             fi
             sleep 2
           done
 
-          docker exec scrcpy-web adb connect 127.0.0.1:5555 || true
+          if ! curl -sf -o /dev/null http://127.0.0.1:8000/stream.mjpg --max-time 2; then
+            echo "::error::MJPEG stream never came up"
+            echo "--- scrcpy.log ---"; cat scrcpy.log
+            echo "--- stream.log ---"; cat stream.log
+            exit 1
+          fi
 
       - name: Start Ngrok & Show Summary Link
         run: |
@@ -222,8 +218,10 @@ jobs:
             exit 1
           fi
 
+          STREAM_URL="$WEB_TUNNEL/stream.mjpg"
           echo "# 🚀 FAST ONE-CLICK CONNECT LINK" >> $GITHUB_STEP_SUMMARY
-          echo "## 👉 [$WEB_TUNNEL]($WEB_TUNNEL)" >> $GITHUB_STEP_SUMMARY
+          echo "## 👉 [$STREAM_URL]($STREAM_URL)" >> $GITHUB_STEP_SUMMARY
+          echo "(open in a browser tab — it's a live MJPEG stream, not a full page)" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "---" >> $GITHUB_STEP_SUMMARY
           echo "### 🆔 Fresh Identity Applied:" >> $GITHUB_STEP_SUMMARY
