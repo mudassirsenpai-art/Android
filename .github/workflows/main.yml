@@ -18,7 +18,7 @@ jobs:
       - name: Fast System Setup
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends adb curl tar openssl unzip ffmpeg scrcpy
+          sudo apt-get install -y --no-install-recommends adb curl tar openssl unzip xvfb x11vnc novnc websockify
 
       - name: Enable KVM access
         run: |
@@ -80,10 +80,17 @@ jobs:
           echo "AVD confirmed:"
           cat "$ANDROID_AVD_HOME/phone.ini"
 
-      - name: Boot Emulator (headless, KVM-accelerated)
+      - name: Start Virtual Display
         run: |
+          Xvfb :1 -screen 0 1280x800x24 &
+          echo "DISPLAY=:1" >> $GITHUB_ENV
+          sleep 2
+
+      - name: Boot Emulator (on virtual display, KVM-accelerated)
+        run: |
+          export DISPLAY=:1
           nohup $ANDROID_HOME/emulator/emulator -avd phone \
-            -no-window -no-audio -no-boot-anim -accel on -gpu swiftshader_indirect \
+            -no-audio -no-boot-anim -accel on -gpu swiftshader_indirect \
             > emulator.log 2>&1 &
           echo "Emulator launched, waiting for adb device..."
 
@@ -158,41 +165,39 @@ jobs:
           echo "Downloaded from $DOWNLOADED"
           adb install -r -g aurora.apk
 
-      # Replaces the old ws-scrcpy Docker/npm pipeline. That path required
-      # cloning a repo, building a Docker image, and running "npm ci", which
-      # kept breaking (missing Python for node-gyp, then a postinstall
-      # script referencing a file not yet present in the build context).
-      # This approach needs nothing but scrcpy + ffmpeg (already installed
-      # in "Fast System Setup") and pipes scrcpy's raw H.264 output directly
-      # into ffmpeg's own built-in HTTP MJPEG server. It has fewer moving
-      # parts, nothing to compile, and lower latency than a websocket-based
-      # web client, which helps on a high-ping connection.
-      - name: Stream Android Screen (scrcpy -> ffmpeg MJPEG)
+      # Replaces the old scrcpy -> ffmpeg MJPEG pipeline. MJPEG was
+      # view-only: it could show the screen but couldn't send clicks or
+      # keystrokes back to the device. This approach runs the emulator on
+      # a real (virtual) X display via Xvfb, grabs that display with
+      # x11vnc, and serves it through noVNC's web client — so the user
+      # gets a fully interactive session (mouse + keyboard) in a plain
+      # browser tab, not just a passive video feed.
+      - name: Start VNC + noVNC Web Client
         run: |
-          nohup bash -c '
-            scrcpy --no-window --no-audio --record=- --record-format=mkv --max-fps=30 --video-bit-rate=4M 2>scrcpy.log | \
-            ffmpeg -i - -f mjpeg -q:v 5 -r 15 -listen 1 http://0.0.0.0:8000/stream.mjpg
-          ' > stream.log 2>&1 &
+          x11vnc -display :1 -forever -shared -nopw -rfbport 5900 > x11vnc.log 2>&1 &
+          sleep 2
 
-          echo "Waiting for MJPEG stream to come up..."
+          websockify -D --web=/usr/share/novnc 6080 localhost:5900 > websockify.log 2>&1 &
+
+          echo "Waiting for noVNC web client to come up..."
           for i in $(seq 1 30); do
-            if curl -sf -o /dev/null http://127.0.0.1:8000/stream.mjpg --max-time 2; then
-              echo "Stream is up."
+            if curl -sf -o /dev/null http://127.0.0.1:6080/vnc.html --max-time 2; then
+              echo "noVNC is up."
               break
             fi
             sleep 2
           done
 
-          if ! curl -sf -o /dev/null http://127.0.0.1:8000/stream.mjpg --max-time 2; then
-            echo "::error::MJPEG stream never came up"
-            echo "--- scrcpy.log ---"; cat scrcpy.log
-            echo "--- stream.log ---"; cat stream.log
+          if ! curl -sf -o /dev/null http://127.0.0.1:6080/vnc.html --max-time 2; then
+            echo "::error::noVNC web client never came up"
+            echo "--- x11vnc.log ---"; cat x11vnc.log
+            echo "--- websockify.log ---"; cat websockify.log
             exit 1
           fi
 
       - name: Start Ngrok & Show Summary Link
         run: |
-          ngrok http 8000 --log=stdout > ngrok_web.log &
+          ngrok http 6080 --log=stdout > ngrok_web.log &
 
           WEB_TUNNEL=""
           for i in $(seq 1 15); do
@@ -218,10 +223,10 @@ jobs:
             exit 1
           fi
 
-          STREAM_URL="$WEB_TUNNEL/stream.mjpg"
+          STREAM_URL="$WEB_TUNNEL/vnc.html?autoconnect=true&resize=scale"
           echo "# 🚀 FAST ONE-CLICK CONNECT LINK" >> $GITHUB_STEP_SUMMARY
           echo "## 👉 [$STREAM_URL]($STREAM_URL)" >> $GITHUB_STEP_SUMMARY
-          echo "(open in a browser tab — it's a live MJPEG stream, not a full page)" >> $GITHUB_STEP_SUMMARY
+          echo "(opens an interactive noVNC session — mouse & keyboard work directly on the device)" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "---" >> $GITHUB_STEP_SUMMARY
           echo "### 🆔 Fresh Identity Applied:" >> $GITHUB_STEP_SUMMARY
