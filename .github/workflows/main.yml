@@ -156,33 +156,36 @@ jobs:
           path: /tmp/xvfb-debug.png
           if-no-files-found: warn
 
-      - name: Install Aurora Play Store (Guaranteed Fix)
+      - name: Install Brave Browser
         run: |
           mkdir -p /tmp/apks && cd /tmp/apks
-
           set -e
-          URLS=(
-            "https://auroraoss.com/files/AuroraStore/Release/AuroraStore-4.8.4.apk"
-            "https://f-droid.org/repo/com.aurora.store_59.apk"
-          )
 
-          DOWNLOADED=""
-          for url in "${URLS[@]}"; do
-            echo "Trying: $url"
-            if curl -sSL -f -o aurora.apk "$url"; then
-              DOWNLOADED="$url"
-              break
-            fi
-            echo "Failed: $url"
-          done
+          echo "Fetching latest Brave Browser release info..."
+          RELEASE_JSON=$(curl -sSL "https://api.github.com/repos/brave/brave-browser/releases/latest")
 
-          if [ -z "$DOWNLOADED" ]; then
-            echo "::error::Could not download Aurora Store APK from any known source"
+          # The emulator is x86_64, so pick that architecture's APK asset.
+          APK_URL=$(echo "$RELEASE_JSON" | python3 -c "
+          import json,sys
+          data = json.load(sys.stdin)
+          for asset in data.get('assets', []):
+              name = asset.get('name', '')
+              if name.endswith('.apk') and 'x86_64' in name:
+                  print(asset.get('browser_download_url'))
+                  break
+          ")
+
+          if [ -z "$APK_URL" ]; then
+            echo "::error::Could not find an x86_64 Brave APK in the latest release"
+            echo "$RELEASE_JSON" | python3 -c "import json,sys; [print(a['name']) for a in json.load(sys.stdin).get('assets', [])]"
             exit 1
           fi
 
-          echo "Downloaded from $DOWNLOADED"
-          adb install -r -g aurora.apk
+          echo "Downloading: $APK_URL"
+          curl -sSL -f -o brave.apk "$APK_URL"
+
+          echo "Installing Brave..."
+          adb install -r -g brave.apk
 
       - name: Start Real VNC Server (password protected, keyboard-fixed)
         run: |
