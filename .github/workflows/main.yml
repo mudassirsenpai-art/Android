@@ -86,6 +86,15 @@ jobs:
             exit 1
           fi
 
+          # By default the emulator ignores the host's physical keyboard and
+          # only accepts the on-screen soft keyboard. This forwards real
+          # key presses (including through VNC) into the guest.
+          CONFIG_INI="$ANDROID_AVD_HOME/phone.avd/config.ini"
+          sed -i '/^hw.keyboard=/d' "$CONFIG_INI"
+          echo "hw.keyboard=yes" >> "$CONFIG_INI"
+          sed -i '/^hw.keyboard.lid=/d' "$CONFIG_INI"
+          echo "hw.keyboard.lid=false" >> "$CONFIG_INI"
+
           echo "AVD confirmed:"
           cat "$ANDROID_AVD_HOME/phone.ini"
 
