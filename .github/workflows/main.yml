@@ -184,23 +184,52 @@ jobs:
           echo "Downloaded from $DOWNLOADED"
           adb install -r -g aurora.apk
 
-      - name: Start Real VNC Server (password protected)
+      - name: Start Real VNC Server (password protected, keyboard-fixed)
         run: |
           mkdir -p ~/.vnc
           x11vnc -storepasswd "${{ secrets.VNC_PASSWORD }}" ~/.vnc/passwd
-          x11vnc -display :1 -forever -shared -rfbauth ~/.vnc/passwd -rfbport 5900 > x11vnc.log 2>&1 &
-          sleep 2
 
+          # -xkb + -noxrecord + -repeat fixes external/physical keyboard
+          # input not registering through certain VNC clients.
+          # -nocursorshape + -ncache 0 + low color depth cuts bandwidth,
+          # which reduces perceived lag over the ngrok tunnel.
+          cat > ~/start_vnc.sh << 'EOF'
+          #!/bin/bash
+          while true; do
+            x11vnc -display :1 -forever -shared \
+              -rfbauth ~/.vnc/passwd -rfbport 5900 \
+              -xkb -noxrecord -noxfixes -noxdamage -repeat \
+              -nocursorshape -nomodtweak \
+              > x11vnc.log 2>&1
+            echo "$(date): x11vnc exited, restarting in 3s..." >> x11vnc.log
+            sleep 3
+          done
+          EOF
+          chmod +x ~/start_vnc.sh
+          nohup ~/start_vnc.sh > x11vnc_supervisor.log 2>&1 &
+
+          sleep 3
           if ! pgrep -f "x11vnc" > /dev/null; then
             echo "::error::x11vnc failed to start"
             cat x11vnc.log
             exit 1
           fi
-          echo "x11vnc running on port 5900"
+          echo "x11vnc running on port 5900 (auto-restart enabled)"
 
-      - name: Start Ngrok TCP Tunnel & Show Connect Info
+      - name: Start Ngrok TCP Tunnel (auto-restart) & Show Connect Info
         run: |
-          ngrok tcp 5900 --log=stdout > ngrok_tcp.log &
+          # Watchdog wrapper so ngrok reconnects automatically if the
+          # free-tier tunnel drops after ~20-30 min of idle/network hiccups.
+          cat > ~/start_ngrok.sh << 'EOF'
+          #!/bin/bash
+          while true; do
+            ngrok tcp 5900 --log=stdout >> ngrok_tcp.log 2>&1
+            echo "$(date): ngrok exited, restarting in 3s..." >> ngrok_tcp.log
+            sleep 3
+          done
+          EOF
+          chmod +x ~/start_ngrok.sh
+          nohup ~/start_ngrok.sh > ngrok_supervisor.log 2>&1 &
 
           TCP_TUNNEL=""
           for i in $(seq 1 15); do
@@ -251,6 +280,26 @@ jobs:
           echo "- **Serial:** \`${{ env.GENERATED_SERIAL }}\`" >> $GITHUB_STEP_SUMMARY
           echo "- **Android ID:** \`${{ env.GENERATED_ANDROID_ID }}\`" >> $GITHUB_STEP_SUMMARY
 
-      - name: Keep Alive
+      - name: Keep Alive & Re-announce Tunnel If It Changes
         run: |
-          while true; do sleep 300; done
+          LAST_URL=""
+          while true; do
+            sleep 60
+            CURRENT_URL=$(curl -s http://localhost:4040/api/tunnels | python3 -c "
+          import json,sys
+          try:
+              data = json.load(sys.stdin)
+              for t in data.get('tunnels', []):
+                  if t.get('proto') == 'tcp':
+                      print(t.get('public_url'))
+          except Exception:
+              pass
+          " 2>/dev/null)
+
+            if [ -n "$CURRENT_URL" ] && [ "$CURRENT_URL" != "$LAST_URL" ]; then
+              HOST_PORT=$(echo "$CURRENT_URL" | sed 's#tcp://##')
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "🔄 **Tunnel reconnected — new address:** \`$HOST_PORT\`" >> $GITHUB_STEP_SUMMARY
+              LAST_URL="$CURRENT_URL"
+            fi
+          done
