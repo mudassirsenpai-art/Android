@@ -165,14 +165,23 @@ jobs:
           RELEASE_JSON=$(curl -sSL "https://api.github.com/repos/brave/brave-browser/releases/latest")
 
           # The emulator is x86_64, so pick that architecture's APK asset.
+          # Brave's release assets use names like "BraveMonox64.apk" (64-bit),
+          # "BraveMonox86.apk" (32-bit), "BraveMonoarm64.apk" (ARM) — not "x86_64".
           APK_URL=$(echo "$RELEASE_JSON" | python3 -c "
           import json,sys
           data = json.load(sys.stdin)
-          for asset in data.get('assets', []):
-              name = asset.get('name', '')
-              if name.endswith('.apk') and 'x86_64' in name:
-                  print(asset.get('browser_download_url'))
+          assets = data.get('assets', [])
+          preferred = ['BraveMonox64.apk', 'Bravex64.apk']
+          chosen = None
+          for name in preferred:
+              for asset in assets:
+                  if asset.get('name') == name:
+                      chosen = asset.get('browser_download_url')
+                      break
+              if chosen:
                   break
+          if chosen:
+              print(chosen)
           ")
 
           if [ -z "$APK_URL" ]; then
