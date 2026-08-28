@@ -166,44 +166,47 @@ jobs:
           if-no-files-found: warn
 
       - name: Install Brave Browser
+        continue-on-error: true
         run: |
           mkdir -p /tmp/apks && cd /tmp/apks
           set -e
 
-          echo "Fetching latest Brave Browser release info..."
-          RELEASE_JSON=$(curl -sSL "https://api.github.com/repos/brave/brave-browser/releases/latest")
+          # "latest/download/<asset>" redirects straight to the newest
+          # release's asset — no GitHub API call involved, so it never
+          # hits API rate limits (which was causing the empty asset list).
+          DIRECT_URL="https://github.com/brave/brave-browser/releases/latest/download/BraveMonox64.apk"
 
-          # The emulator is x86_64, so pick that architecture's APK asset.
-          # Brave's release assets use names like "BraveMonox64.apk" (64-bit),
-          # "BraveMonox86.apk" (32-bit), "BraveMonoarm64.apk" (ARM) — not "x86_64".
-          APK_URL=$(echo "$RELEASE_JSON" | python3 -c "
+          echo "Trying direct download: $DIRECT_URL"
+          if curl -sSL -f -o brave.apk "$DIRECT_URL"; then
+            echo "Downloaded via direct latest/download link"
+          else
+            echo "Direct link failed, falling back to GitHub API lookup..."
+            RELEASE_JSON=$(curl -sSL -H "Accept: application/vnd.github+json" "https://api.github.com/repos/brave/brave-browser/releases/latest")
+
+            APK_URL=$(echo "$RELEASE_JSON" | python3 -c "
           import json,sys
           data = json.load(sys.stdin)
           assets = data.get('assets', [])
-          preferred = ['BraveMonox64.apk', 'Bravex64.apk']
-          chosen = None
-          for name in preferred:
-              for asset in assets:
-                  if asset.get('name') == name:
-                      chosen = asset.get('browser_download_url')
-                      break
-              if chosen:
+          for asset in assets:
+              if asset.get('name') == 'BraveMonox64.apk':
+                  print(asset.get('browser_download_url'))
                   break
-          if chosen:
-              print(chosen)
           ")
 
-          if [ -z "$APK_URL" ]; then
-            echo "::error::Could not find an x86_64 Brave APK in the latest release"
-            echo "$RELEASE_JSON" | python3 -c "import json,sys; [print(a['name']) for a in json.load(sys.stdin).get('assets', [])]"
-            exit 1
+            if [ -z "$APK_URL" ]; then
+              echo "::warning::Could not download Brave Browser (direct link and API both failed) — continuing without it, VNC will still start"
+              exit 0
+            fi
+
+            echo "Downloading: $APK_URL"
+            curl -sSL -f -o brave.apk "$APK_URL" || {
+              echo "::warning::Brave APK download failed — continuing without it, VNC will still start"
+              exit 0
+            }
           fi
 
-          echo "Downloading: $APK_URL"
-          curl -sSL -f -o brave.apk "$APK_URL"
-
           echo "Installing Brave..."
-          adb install -r -g brave.apk
+          adb install -r -g brave.apk || echo "::warning::Brave install failed — continuing anyway"
 
       - name: Start Real VNC Server (password protected, keyboard-fixed)
         run: |
